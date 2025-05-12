@@ -1,0 +1,2163 @@
+---
+title: "PARSIFAL metagenomics analyses"
+author: "Hendrik Dühr"
+date: today
+format: 
+  html:
+    mainfont: Helvetica
+    monofont: Consolas
+    page-layout: article
+    toc: true
+    toc-depth: 3
+    toc-title: Contents
+    toc-location: left
+    number-sections: true
+    number-depth: 3
+    code-overflow: wrap
+    smooth-scroll: true
+editor_options: 
+  chunk_output_type: console
+---
+
+# Packages
+
+## Installation
+
+```{r eval=FALSE}
+### Install mia from GitHub to have current fixes
+install.packages("remotes")
+library(remotes)
+install_github("microbiome/mia")
+install.packages("BiocManager")
+library(BiocManager)
+install("miaViz")
+install("ALDEx2")
+install("ANCOMBC")
+install("Maaslin2")
+install("DESeq2")
+install("scater")
+install("phyloseq")
+install("Wrench")
+install("BiocParallel")
+install.packages("tidyverse")
+install.packages("ggsignif")
+install.packages("patchwork")
+install.packages("missRanger")
+install.packages("ranger")
+install.packages("ggvenn")
+install.packages("vegan")
+install.packages("kableExtra")
+install.packages("sfsmisc")
+install.packages("cowplot")
+install.packages("gridExtra")
+install.packages("igraph")
+install.packages("ggraph")
+install.packages("foreach")
+install.packages("rngtools")
+install.packages("reshape2")
+install.packages("ape")
+install.packages("multcomp")
+install.packages("ggprism")
+install.packages("RColorBrewer")
+install.packages("ggokabeito")
+install.packages("caret")
+install.packages("vip")
+install.packages("writexl")
+install.packages("jtools")
+install.packages("GUniFrac")
+install.packages("rms")
+install.packages("mice")
+install.packages("VIM")
+install.packages("NMF")
+install.packages("metacoder")
+```
+
+## Loading
+
+```{r output=FALSE, message=FALSE, warning=FALSE}
+library(mia)
+library(miaViz)
+library(ALDEx2)
+library(ANCOMBC)
+library(Maaslin2)
+library(DESeq2)
+library(scater)
+library(phyloseq)
+library(Wrench)
+library(tidyverse)
+library(ggsignif)
+library(patchwork)
+library(missRanger)
+library(ranger)
+library(ggvenn)
+library(vegan)
+library(scater)
+library(kableExtra)
+library(sfsmisc)
+library(cowplot)
+library(gridExtra)
+library(igraph)
+library(ggraph)
+library(foreach)
+library(rngtools)
+library(reshape2)
+library(ape)
+library(multcomp)
+library(ggprism)
+library(parallel)
+library(doParallel)
+library(RColorBrewer)
+library(ggokabeito)
+library(caret)
+library(vip)
+library(writexl)
+library(jtools)
+library(MASS)
+library(stats)
+library(GUniFrac)
+library(rms)
+library(mice)
+library(VIM)
+library(NMF)
+library(foreach)
+library(BiocParallel)
+library(ComplexHeatmap)
+library(shadowtext)
+library(metacoder)
+library(chisq.posthoc.test)
+library(MetBrewer)
+```
+
+# Session info
+
+```{r}
+#| code-fold: true
+sessionInfo()
+```
+
+# Create data objects
+
+## Cohort data
+
+```{r eval=FALSE}
+cohort <- read.csv("Data/PARSIFAL_cohort_data_12222023.csv")
+# Shorten the Subject IDs, so they match the IDs in the TSE
+cohort$Subject_ID <- gsub("27006s1", "", cohort$Subject_ID)
+# Remove empty variables
+cohort <- cohort[, 1:48]
+# Sample names to rownames
+rownames(cohort) <- cohort[, 2]
+# Get samples in ascending order
+cohort <- cohort[order(cohort$Subject_ID), ]
+# Convert from data.frame to DataFrame
+cohort <- DataFrame(cohort)
+```
+
+## MetaPhlAn data
+
+```{r eval=FALSE}
+# TreeSummarizedExperiment format
+metaphlan <- importMetaPhlAn("Data/MetaPhlAn_PARSIFAL_01232024.tsv", prefix.rm = TRUE)
+# Rename assay accordingly
+assayNames(metaphlan) <- "relabundance"
+species <- altExp(metaphlan, "species")
+# Filter out species with no presence across all samples
+zero_counts <- rowSums(assay(species) == 0) == ncol(assay(species))
+species <- species[!zero_counts, ]
+### Store cohort data in the colData slot of the TSE.
+colData(species) <- TreeSummarizedExperiment::cbind(colData(species), cohort)
+# check that Subject_ID and sample names are the same
+identical(species$Subject_ID, colnames(species))
+identical(rownames(cohort), colnames(species))
+# Remove Subject_ID and uniq columns
+colData(species) <- colData(species)[, -which(colnames(colData(species)) %in% c("Subject_ID", "uniq"))]
+```
+
+## Antibiotic resistance gene (ARG) data
+
+### Load files, preparations
+
+```{r eval=FALSE}
+# Load in gene counts
+ARG_counts <- read_table("Data/ARG_PARSIFAL_01232024.txt", col_names = TRUE) %>% data.frame()
+# Add Seq_ identifier for individual ARGs to gene counts 
+ARG_counts$Seq_id <- paste("Seq_", row.names(ARG_counts), sep = "")
+# Read in gene lengths of ARGs
+ARG_gene_lengths <- read_table("Data/Resfinder_genelengths.txt", col_names=FALSE)
+# Read in taxonomy file from Resfinder database (contains resistance classes)
+ARG_tax <- read.csv("Data/resfinder_phenotypes.txt", header = TRUE, sep = "\t", fill  = TRUE)
+# Add gene level taxonomy by shortening gene accession number
+ARG_tax$Gene <- gsub("(.+?)(\\_.*)", "\\1", ARG_tax$Gene_accession.no.)
+# Check that order of gene accession number is the same
+identical(ARG_counts$V1, ARG_gene_lengths$X1)
+# Add Seq_ identifier
+ARG_gene_lengths$Seq_id <- paste("Seq_", row.names(ARG_gene_lengths), sep = "")
+# Add gene accession number to gene lengths
+ARG_gene_lengths$Gene_accession.no. <- ARG_gene_lengths$X1
+# Merge Resfinder taxonomy file with the gene lengths file using Gene_accession.no
+tmp2 <- merge(ARG_gene_lengths, ARG_tax, by  = "Gene_accession.no.")
+# Remove duplicate rows 
+tmp2 <- tmp2[!tmp2$Seq_id %>% duplicated(),]
+# Add Seq_id as the row name
+rownames(tmp2) <- tmp2$Seq_id
+```
+
+### Normalize by gene lengths
+
+```{r eval=FALSE}
+df <- ARG_counts
+df$Gene_length <- ARG_gene_lengths$X2
+# Remove extra columns
+df <- df %>% dplyr::select(-matches(c("Seq_id", "V1")))
+# Divide by counts by lenghts
+ARG_counts_length_norm <- df[,-length(df)]/df$Gene_length
+rownames(ARG_counts_length_norm) <- ARG_counts$Seq_id
+```
+
+### Final ARG data object
+
+```{r eval=FALSE}
+### Load in library size
+libsize <- read.table("Data/lib_sizes_with_filenames_01232024.txt", row.names = 2)
+libsize$File_name <- rownames(libsize)
+# Check that we have common samples and genes
+common.feat <- base::intersect(rownames(ARG_counts_length_norm), rownames(tmp2))
+common.samples <- base::intersect(colnames(ARG_counts_length_norm), rownames(libsize))
+### Make TSE
+ARG <- TreeSummarizedExperiment(assay = SimpleList(counts = as.matrix(ARG_counts_length_norm)[common.feat,]), colData = DataFrame(libsize[common.samples, ]), rowData = DataFrame(as.matrix(tmp2)[common.feat, ]))
+# Identify ARGs with 0 counts in all samples
+zero_counts <- rowSums(assay(ARG) == 0) == ncol(assay(ARG))
+# Subset ARG_final to exclude rows with zero counts in all samples
+ARG <- ARG[!zero_counts, ]
+### Merge data based on 'Gene' in rowData (gene variants are agglomerated)
+rownames(ARG) <- rowData(ARG)$Gene
+f <- factor(rownames(ARG))
+ARG <- agglomerateByVariable(ARG, by = 'rows', f)
+### Calculate ARG load and store it in colData
+# Add sample-wise sums of the ARGs and the normalized RPKM values
+ARG$SUM <- colSums(assay(ARG, "counts")) # This holds sample-wise ARG sums normalized for ARG lengths only
+ARG$SUM_norm <- ARG$SUM/ARG$V1*1e6*1e3 # This is Reads per MILLION (1e6) per KILO (1e3) bases RPKM
+### Store cohort data in the colData slot of the TSE.
+colData(ARG) <- TreeSummarizedExperiment::cbind(colData(ARG), cohort)
+# check that Subject_ID and sample names are the same
+identical(ARG$Subject_ID, colnames(ARG))
+identical(rownames(cohort), colnames(ARG))
+# Remove Subject_ID and uniq columns
+colData(ARG) <- colData(ARG)[, -which(colnames(colData(ARG)) %in% c("Subject_ID", "uniq"))]
+```
+
+# Data normalization
+
+## MetaPhlAn data
+
+```{r eval=FALSE}
+# Contains relative abundances of species
+df_relab <- as.data.frame(assay(species))
+# Column V1 contains library sizes
+df_libsize <- as.data.frame(colData(ARG)) 
+# Transpose df_relab
+df_relab_tp <- t(df_relab)
+# (Metaphlan rel. abundance (%) / 100) * library size 
+libxrelab <- (df_relab_tp / 100) * df_libsize$V1
+### Additional normalization step to group size
+# Ensure df_libsize has a column for group_new
+df_libsize$group_new <- as.factor(df_libsize$group_new)
+# Calculate group sizes
+group_sizes <- table(df_libsize$group_new)
+# Normalize libxrelab by group size
+libxrelab_group <- libxrelab
+for (group in names(group_sizes)) {
+  # Identify samples in the current group
+  samples_in_group <- df_libsize$group_new == group
+  # Normalize the data for the current group by dividing by group size
+  libxrelab_group[samples_in_group, ] <- libxrelab[samples_in_group, ] / group_sizes[group]
+}
+# Find factor for multiplication: Lowest (Metaphlan rel. abundance (%) / 100) * library size > 0 will be transformed to 1
+min(libxrelab[libxrelab > 0])
+min(libxrelab_group[libxrelab_group > 0])
+# Set lowest > 0 to 1
+libxrelab_scale <- libxrelab * (1/min(libxrelab[libxrelab > 0]))
+libxrelab_scale_group <- libxrelab_group * (1/min(libxrelab_group[libxrelab_group > 0]))
+# Transpose the result back to its original shape
+libxrelab_scale <- t(libxrelab_scale)
+libxrelab <- t(libxrelab)
+libxrelab_scale_group <- t(libxrelab_scale_group)
+# Round to whole numbers
+libxrelab_scale <- round(libxrelab_scale)
+libxrelab <- round(libxrelab)
+libxrelab_scale_group <- round(libxrelab_scale_group)
+# Check if all numbers are whole numbers
+table(is.whole(libxrelab_scale))
+# Check if colnames and rownames are identical
+identical(rownames(libxrelab_scale), rownames(species))
+identical(colnames(libxrelab_scale), colnames(species))
+# Overwrite assay slot
+assay(species, "scale_norm") <- libxrelab_scale
+assay(species, "norm") <- libxrelab
+assay(species, "group") <- libxrelab_scale_group
+### Convert the group_new variable to the new labels
+colData(species)$group_new <- factor(colData(species)$group_new, 
+                                  levels = c(1, 2, 3, 4),
+                                  labels = c("Farm", "Steiner", "Farm_ref", "Steiner_ref"))
+```
+
+## ARG data
+
+```{r eval=FALSE}
+# assay(ARG_final) contains (counts/gene length) ARGs
+df_ARG <- as.data.frame(assay(ARG))
+# Column V1 contains library sizes
+df_libsize <- as.data.frame(colData(ARG))
+# Transpose df_ARG
+df_ARG_tp <- t(df_ARG)
+# (counts/gene length)/library size
+ARGlib <- df_ARG_tp / df_libsize$V1
+### Additional normalization step to group size
+# Ensure df_libsize has a column for group_new
+df_libsize$group_new <- as.factor(df_libsize$group_new)
+# Calculate group sizes
+group_sizes <- table(df_libsize$group_new)
+# Normalize libxrelab by group size
+ARGlib_group <- ARGlib
+for (group in names(group_sizes)) {
+  # Identify samples in the current group
+  samples_in_group <- df_libsize$group_new == group
+  # Normalize the data for the current group by dividing by group size
+  ARGlib_group[samples_in_group, ] <- ARGlib[samples_in_group, ] / group_sizes[group]
+}
+# Find factor for multiplication: Lowest (counts/gene length) > 0 will be transformed to 1
+min(ARGlib[ARGlib > 0])
+# Set lowest > 0 ((counts/gene length)/library size) to 1
+ARGlib_scale <- ARGlib * (1/min(ARGlib[ARGlib > 0]))
+ARGlib_scale_group <- ARGlib_group * (1/min(ARGlib_group[ARGlib_group > 0]))
+# Transpose the result back to its original shape
+ARGlib_scale <- t(ARGlib_scale)
+ARGlib <- t(ARGlib)
+ARGlib_scale_group <- t(ARGlib_scale_group)
+# Round to whole numbers
+ARGlib_scale <- round(ARGlib_scale)
+ARGlib <- round(ARGlib)
+ARGlib_scale_group <- round(ARGlib_scale_group)
+# Check if all numbers are whole numbers
+table(is.whole(ARGlib_scale))
+# Check if colnames and rownames are identical
+identical(rownames(ARGlib_scale), rownames(assay(ARG)))
+identical(colnames(ARGlib_scale), colnames(assay(ARG)))
+# Overwrite assay slot
+assay(ARG, "scale_norm") <- ARGlib_scale
+assay(ARG, "norm") <- ARGlib
+assay(ARG, "group") <- ARGlib_scale_group
+### Convert the group_new variable to the new labels
+colData(ARG)$group_new <- factor(colData(ARG)$group_new, 
+                                  levels = c(1, 2, 3, 4),
+                                  labels = c("Farm", "Steiner", "Farm_ref", "Steiner_ref"))
+```
+
+# Differential abundance analyses
+
+## Species
+
+### Preparation
+
+```{r eval=FALSE}
+### Prepare TSE for Steiner and Steiner references
+# Subset based on groups
+tax_steiner <- species[ , species$group_new %in% c("Steiner", "Steiner_ref")]
+# Identify taxa with 0 counts in all samples
+zero_counts <- rowSums(assay(tax_steiner) == 0) == ncol(assay(tax_steiner))
+# Subset to exclude rows with zero counts in all samples
+tax_steiner <- tax_steiner[!zero_counts, ]
+# Set correct reference group
+tax_steiner$group_new <- relevel(tax_steiner$group_new, ref = "Steiner_ref")
+# 10 % Prevalence filtering
+tax_steiner <- subsetByPrevalent(tax_steiner, rank = "species", assay.type = "scale_norm", as_relative = FALSE, detection = 1, prevalence = 0.1)
+### Prepare TSE for farm and farm references
+# Subset based on groups
+tax_farm <- species[ , species$group_new %in% c("Farm", "Farm_ref")]
+# Identify taxa with 0 counts in all samples
+zero_counts <- rowSums(assay(tax_farm) == 0) == ncol(assay(tax_farm))
+# Subset to exclude rows with zero counts in all samples
+tax_farm <- tax_farm[!zero_counts, ]
+# Set correct reference group
+tax_farm$group_new <- relevel(tax_farm$group_new, ref = "Farm_ref")
+# 10 % Prevalence filtering
+tax_farm <- subsetByPrevalent(tax_farm, rank = "species", assay.type = "scale_norm", as_relative = FALSE, detection = 1, prevalence = 0.1)
+```
+
+```{r eval=FALSE}
+### Create df for analysis
+tax_steiner_df <- as.data.frame(t(assay(tax_steiner, "scale_norm")))
+tax_steiner_meta_df <- as.data.frame(colData(tax_steiner))
+tax_farm_df <- as.data.frame(t(assay(tax_farm, "scale_norm")))
+tax_farm_meta_df <- as.data.frame(colData(tax_farm))
+```
+
+#### MaAsLin2
+
+##### Steiner
+
+```{r eval=FALSE}
+MaAsLin2_tax_steiner <- Maaslin2(
+    tax_steiner_df, tax_steiner_meta_df, 'MaAsLin2_tax_steiner',
+    min_abundance = 0,
+    min_prevalence = 0,
+    min_variance = 0,
+    normalization = "TSS",
+    transform = "LOG",
+    analysis_method = "LM",
+    max_significance = 0.05,
+    fixed_effects = c('group_new'),
+    correction = "BH",
+    standardize = FALSE,
+    cores = detectCores()-1,
+    reference = "group_new,Steiner_ref")
+```
+
+```{r eval=FALSE}
+M2tsr <- as.data.frame(MaAsLin2_tax_steiner$results)
+M2tsr %>% dplyr::filter(qval <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
+```
+
+##### Farm
+
+```{r eval=FALSE}
+MaAsLin2_tax_farm <- Maaslin2(
+    tax_farm_df, tax_farm_meta_df, 'MaAsLin2_tax_farm',
+    min_abundance = 0,
+    min_prevalence = 0,
+    min_variance = 0,
+    normalization = "TSS",
+    transform = "LOG",
+    analysis_method = "LM",
+    max_significance = 0.05,
+    fixed_effects = c('group_new'),
+    correction = "BH",
+    standardize = FALSE,
+    cores = detectCores()-1,
+    reference = "group_new,Farm_ref")
+```
+
+```{r eval=FALSE}
+M2tfr <- as.data.frame(MaAsLin2_tax_farm$results)
+M2tfr %>% dplyr::filter(qval <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
+```
+
+#### Wilcoxon test
+
+##### Steiner
+
+```{r eval=FALSE}
+# TSS normalization
+tax_steiner_df <- as.data.frame(t(t(tax_steiner_df)/colSums(t(tax_steiner_df))))
+# Add metadata
+wil_tax_steiner <- base::cbind(
+  tax_steiner_df, 
+  group_new = colData(tax_steiner)$group_new
+)
+# Get taxa names
+taxa <- names(wil_tax_steiner[, !names(wil_tax_steiner) %in% "group_new"])
+# Create empty vector for data storage
+wilcox_tax_steiner <- c() 
+# Do "for loop" over selected column names
+for (i in taxa) {
+  result <- wilcox.test(wil_tax_steiner[, i] ~ group_new,
+                        data = wil_tax_steiner)
+  # Stores p-value to the vector with this column name
+  wilcox_tax_steiner[[i]]  <- result$p.value
+}
+# p-values
+wilcox_tax_steiner <- data.frame(taxa =  names(wilcox_tax_steiner),
+                         p_raw = unlist(wilcox_tax_steiner))
+# Adjusted p-values
+wilcox_tax_steiner$p_adjusted <- p.adjust(wilcox_tax_steiner$p_raw, method = "BH")
+```
+
+```{r eval=FALSE}
+wilcox_tax_steiner %>% dplyr::filter(p_adjusted <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
+```
+
+##### Farm
+
+```{r eval=FALSE}
+# TSS normalization
+tax_farm_df <- as.data.frame(t(t(tax_farm_df)/colSums(t(tax_farm_df))))
+# Add metadata
+wil_tax_farm <- base::cbind(
+  tax_farm_df, 
+  group_new = colData(tax_farm)$group_new
+)
+# Get taxa names
+taxa <- names(wil_tax_farm[, !names(wil_tax_farm) %in% "group_new"])
+# Create empty vector for data storage
+wilcox_tax_farm <- c() 
+# Do "for loop" over selected column names
+for (i in taxa) {
+  result <- wilcox.test(wil_tax_farm[, i] ~ group_new,
+                        data = wil_tax_farm)
+  # Stores p-value to the vector with this column name
+  wilcox_tax_farm[[i]]  <- result$p.value
+}
+# p-values
+wilcox_tax_farm <- data.frame(taxa =  names(wilcox_tax_farm),
+                         p_raw = unlist(wilcox_tax_farm))
+# Adjusted p-values
+wilcox_tax_farm$p_adjusted <- p.adjust(wilcox_tax_farm$p_raw, method = "BH")
+```
+
+```{r eval=FALSE}
+wilcox_tax_farm %>% dplyr::filter(p_adjusted <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
+```
+
+## ARG
+
+### Preparation
+
+```{r eval=FALSE}
+### Prepare TSE for Steiner and Steiner references
+# Subset based on groups
+ARG_steiner <- ARG[ , ARG$group_new %in% c("Steiner", "Steiner_ref")]
+# Identify ARGs with 0 counts in all samples
+zero_counts <- rowSums(assay(ARG_steiner) == 0) == ncol(assay(ARG_steiner))
+# Subset to exclude rows with zero counts in all samples
+ARG_steiner <- ARG_steiner[!zero_counts, ]
+# Set correct reference group
+ARG_steiner$group_new <- relevel(ARG_steiner$group_new, ref = "Steiner_ref")
+### Prepare TSE for farm and farm references
+# Subset based on groups
+ARG_farm <- ARG[ , ARG$group_new %in% c("Farm", "Farm_ref")]
+# Identify ARGs with 0 counts in all samples
+zero_counts <- rowSums(assay(ARG_farm) == 0) == ncol(assay(ARG_farm))
+# Subset to exclude rows with zero counts in all samples
+ARG_farm <- ARG_farm[!zero_counts, ]
+# Set correct reference group
+ARG_farm$group_new <- relevel(ARG_farm$group_new, ref = "Farm_ref")
+```
+
+```{r eval=FALSE}
+### Create df for analysis
+ARG_steiner_df <- as.data.frame(t(assay(ARG_steiner, "scale_norm")))
+ARG_steiner_meta_df <- as.data.frame(colData(ARG_steiner))
+ARG_farm_df <- as.data.frame(t(assay(ARG_farm, "scale_norm")))
+ARG_farm_meta_df <- as.data.frame(colData(ARG_farm))
+```
+
+#### MaAsLin2
+
+##### Steiner
+
+```{r eval=FALSE}
+MaAsLin2_ARG_steiner <- Maaslin2(
+    ARG_steiner_df, ARG_steiner_meta_df, 'MaAsLin2_ARG_steiner',
+    min_abundance = 0,
+    min_prevalence = 0,
+    min_variance = 0,
+    normalization = "TSS",
+    transform = "Log",
+    analysis_method = "LM",
+    max_significance = 0.05,
+    fixed_effects = c('group_new'),
+    correction = "BH",
+    standardize = FALSE,
+    cores = detectCores()-1,
+    reference = "group_new,Steiner_ref")
+```
+
+```{r eval=FALSE}
+M2asr <- as.data.frame(MaAsLin2_ARG_steiner$results)
+M2asr %>% dplyr::filter(qval <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
+```
+
+##### Farm
+
+```{r eval=FALSE}
+MaAsLin2_ARG_farm <- Maaslin2(
+    ARG_farm_df, ARG_farm_meta_df, 'MaAsLin2_ARG_farm',
+    min_abundance = 0,
+    min_prevalence = 0,
+    min_variance = 0,
+    normalization = "TSS",
+    transform = "Log",
+    analysis_method = "LM",
+    max_significance = 0.05,
+    fixed_effects = c('group_new'),
+    correction = "BH",
+    standardize = FALSE,
+    cores = detectCores()-1,
+    reference = "group_new,Farm_ref")
+```
+
+```{r eval=FALSE}
+M2afr <- as.data.frame(MaAsLin2_ARG_farm$results)
+M2afr %>% dplyr::filter(qval <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
+```
+
+#### Wilcoxon test
+
+##### Steiner
+
+```{r eval=FALSE}
+ARG_steiner_df <- as.data.frame(t(t(ARG_steiner_df)/colSums(t(ARG_steiner_df))))
+wil_ARG_steiner <- base::cbind(
+  ARG_steiner_df, 
+  group_new = colData(ARG_steiner)$group_new
+)
+ARG <- names(wil_ARG_steiner[, !names(wil_ARG_steiner) %in% "group_new"])
+wilcox_ARG_steiner <- c() 
+# Do "for loop" over selected column names
+for (i in ARG) {
+  result <- wilcox.test(wil_ARG_steiner[, i] ~ group_new,
+                        data = wil_ARG_steiner)
+  # Stores p-value to the vector with this column name
+  wilcox_ARG_steiner[[i]]  <- result$p.value
+}
+wilcox_ARG_steiner <- data.frame(taxa =  names(wilcox_ARG_steiner),
+                         p_raw = unlist(wilcox_ARG_steiner))
+wilcox_ARG_steiner$p_adjusted <- p.adjust(wilcox_ARG_steiner$p_raw, method = "BH")
+```
+
+```{r eval=FALSE}
+wilcox_ARG_steiner %>% dplyr::filter(p_adjusted <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
+```
+
+##### Farm
+
+```{r eval=FALSE}
+ARG_farm_df <- as.data.frame(t(t(ARG_farm_df)/colSums(t(ARG_farm_df))))
+wil_ARG_farm <- base::cbind(
+  ARG_farm_df, 
+  group_new = colData(ARG_farm)$group_new
+)
+ARG <- names(wil_ARG_farm[, !names(wil_ARG_farm) %in% "group_new"])
+wilcox_ARG_farm <- c() 
+# Do "for loop" over selected column names
+for (i in ARG) {
+  result <- wilcox.test(wil_ARG_farm[, i] ~ group_new,
+                        data = wil_ARG_farm)
+  # Stores p-value to the vector with this column name
+  wilcox_ARG_farm[[i]]  <- result$p.value
+}
+wilcox_ARG_farm <- data.frame(taxa =  names(wilcox_ARG_farm),
+                         p_raw = unlist(wilcox_ARG_farm))
+wilcox_ARG_farm$p_adjusted <- p.adjust(wilcox_ARG_farm$p_raw, method = "BH")
+```
+
+```{r eval=FALSE}
+wilcox_ARG_farm %>% dplyr::filter(p_adjusted <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
+```
+
+#### DESeq2
+
+##### Steiner
+
+```{r eval=FALSE}
+ARG_steiner_ds2 <- TreeSummarizedExperiment(
+  assay = assay(ARG_steiner, "scale_norm"),
+  colData = colData(ARG_steiner),
+  rowData = rowData(ARG_steiner))
+assayNames(ARG_steiner_ds2) <- "counts"
+# Add pseudocount
+assay(ARG_steiner_ds2) <- assay(ARG_steiner_ds2) + 1
+# Creates DESeq2 object from the data. Uses "group_new" to create groups. 
+ds2 <- DESeqDataSet(ARG_steiner_ds2, ~group_new)
+# Perform analysis
+dds <- DESeq(ds2)
+# Gets the results from the object
+res <- results(dds)
+# Creates a data frame from results
+df <- as.data.frame(res)
+# Orders the rows of data frame in increasing order based on the padj column
+df <- df %>% arrange(padj)
+```
+
+```{r eval=FALSE}
+df %>% dplyr::filter(padj <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
+```
+
+##### Farm
+
+```{r eval=FALSE}
+ARG_farm_ds2 <- TreeSummarizedExperiment(
+  assay = assay(ARG_farm, "scale_norm"),
+  colData = colData(ARG_farm),
+  rowData = rowData(ARG_farm))
+assayNames(ARG_farm_ds2) <- "counts"
+# Add pseudocount
+assay(ARG_farm_ds2) <- assay(ARG_farm_ds2) + 1
+# Creates DESeq2 object from the data. Uses "group_new" to create groups. 
+ds2 <- DESeqDataSet(ARG_farm_ds2, ~group_new)
+# Perform analysis
+dds <- DESeq(ds2)
+# Gets the results from the object
+res <- results(dds, alpha = 0.05)
+# Creates a data frame from results
+df <- as.data.frame(res)
+# Orders the rows of data frame in increasing order based on the padj column
+df <- df %>% arrange(padj)
+```
+
+```{r eval=FALSE}
+df %>% dplyr::filter(padj <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
+```
+
+###### Plot
+
+```{r eval=FALSE}
+df_signif <- df %>% dplyr::filter(padj <= 0.05) 
+df_signif <- rownames_to_column(df_signif, var = "Species")
+merged_df <- merge(df_signif, rowData(ARG_farm), by.x = "Species", by.y = "Gene", all.x = TRUE)
+merged_df <- as.data.frame(merged_df) %>% arrange(desc(log2FoldChange))
+ggplot(merged_df, aes(x = reorder(Species, -log2FoldChange), y = log2FoldChange, fill = Class)) +
+  geom_bar(stat = "identity", width = 0.3, position = "dodge") +
+  labs(x = NULL, y = "log2 Fold Change\nFarm ref and Farm") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(
+      angle = 45, hjust = 0.9, vjust = 0.97, size = rel(1.3),
+      face = ifelse(merged_df$Species %in% c("aph(3'')-Ib"), "bold", "italic"), color = "black"
+    ),
+    axis.title.y = element_text(size = rel(1.3)),
+    axis.text.y = element_text(color = "black"),
+    axis.title.x = element_text(size = rel(1.3)),
+    legend.text = element_text(size = rel(0.8)),
+    legend.title = element_text(),
+    legend.position = c(0.73, 0.85),
+    legend.direction = "vertical",
+    legend.key.size = unit(0.5, 'line'),
+    legend.box.background = element_rect(color = "black", fill = "white")
+  ) +
+  scale_fill_brewer(palette = "Paired", name = NULL) +
+  geom_hline(yintercept = 0, color = "black")
+```
+
+# ARG load GLM
+
+## Preparation
+
+```{r eval=FALSE}
+#### Make data frame from colData
+ARG_load <- as.data.frame(colData(ARG))
+# Remove unnecessary variables
+ARG_load <- ARG_load %>% dplyr::select(-c("V1", "File_name", "SUM", "ograssm_cont", "otreem_cont", "bmi", "qb1tall_", "qb1weigh_", "age_cat", "centre", "moth_at", "fath_at", "analysis", "phad_pos", "grassm_pos", "treem_pos", "arztasob", "cur_derm", "nasaug12", "keu12", "atop_sensi", "at_se", "atop_asthma", "noat_asthma", "atop_wheeze", "noat_wheeze", "atop_derm", "noat_derm", "atop_hayf", "noat_hayf", "atop_derms", "noat_derms", "atop_hayfs", "noat_hayfs", "mmr"))
+# Don't know changed to NA
+ARG_load$qe2a[ARG_load$qe2a == 3] <- NA
+# Change never breastfed to NA
+ARG_load$breastf[ARG_load$breastf == 1] <- NA
+### Convert selected variables to factors or numeric
+factor_columns <- names(ARG_load)[!names(ARG_load) %in% c("age", "SUM_norm")]
+ARG_load[factor_columns] <- lapply(ARG_load[factor_columns], factor)
+ARG_load$age <- as.numeric(ARG_load$age)
+# Check which variables are missing
+sapply(ARG_load, function(x) sum(is.na(x)))
+# Calculate percentage of missing values
+(sum(is.na(ARG_load))/prod(dim(ARG_load))) * 100
+# Check the missing variables in the whole dataset
+binary_matrix <- as.matrix(ARG_load)
+binary_matrix[!is.na(binary_matrix)] <- 1
+binary_matrix[is.na(binary_matrix)] <- 0
+heat <- apply(binary_matrix, 2, as.numeric)
+heatmap(t(heat), scale = "none", Rowv = NA, Colv = NA)
+# Visually inspect the data
+p1 <- ggplot(ARG_load, aes(x = sex, y = SUM_norm)) + geom_point() + theme_minimal()
+p2 <- ggplot(ARG_load, aes(x = mat_smo, y = SUM_norm)) + geom_point() + theme_minimal()
+p3 <- ggplot(ARG_load, aes(x = pedu_cat, y = SUM_norm)) + geom_point() + theme_minimal()
+p4 <- ggplot(ARG_load, aes(x = sibold_cat, y = SUM_norm)) + geom_point() + theme_minimal()
+p5 <- ggplot(ARG_load, aes(x = env_smo, y = SUM_norm)) + geom_point() + theme_minimal()
+p6 <- ggplot(ARG_load, aes(x = pet_frst, y = SUM_norm)) + geom_point() + theme_minimal()
+p7 <- ggplot(ARG_load, aes(x = anbioticsgr, y = SUM_norm)) + geom_point() + theme_minimal()
+p8 <- ggplot(ARG_load, aes(x = anpyreticsgr, y = SUM_norm)) + geom_point() + theme_minimal()
+p9 <- ggplot(ARG_load, aes(x = qe2a, y = SUM_norm)) + geom_point() + theme_minimal()
+p10 <- ggplot(ARG_load, aes(x = orgbio, y = SUM_norm)) + geom_point() + theme_minimal()
+p11 <- ggplot(ARG_load, aes(x = group_new, y = SUM_norm)) + geom_point() + theme_minimal()
+p12 <- ggplot(ARG_load, aes(x = age, y = SUM_norm)) + geom_point() + theme_minimal()
+p13 <- ggplot(ARG_load, aes(x = breastf, y = SUM_norm)) + geom_point() + theme_minimal()
+p14 <- ggplot(ARG_load, aes(x = bmi_cat, y = SUM_norm)) + geom_point() + theme_minimal()
+combined_plot1 <- (p1 + p2 + p3 + p4) / (p5 + p6 + p7 + p8) 
+combined_plot2 <- (p9 + p10 + p11 + p12) / (p13 + p14)
+print(combined_plot1)
+print(combined_plot2)
+```
+
+## Complete case analysis
+
+### Full model
+
+```{r eval=FALSE}
+# Remove samples with NAs
+ARG_load_clean <- na.omit(ARG_load)
+# Run stewise regression
+CCA <- step(glm(SUM_norm ~ sex + mat_smo + pedu_cat + sibold_cat + env_smo + pet_frst + anbioticsgr + anpyreticsgr + qe2a + orgbio + group_new + age + breastf + bmi_cat, data = ARG_load_clean, family = "Gamma"(link = "log")), trace = 0)
+summary(CCA)
+summ(CCA, exp = TRUE)
+# Tukey’s post hoc test to adjust multiple comparisons
+glht.sex <- glht(CCA, mcp(sex = "Tukey"))
+summary(glht(glht.sex)) # NS
+glht.gr <- glht(CCA, mcp(group_new = "Tukey"))
+summary(glht(glht.gr)) # NS
+glht.br <- glht(CCA, mcp(breastf = "Tukey"))
+summary(glht(glht.br)) # *
+glht.bmi <- glht(CCA, mcp(bmi_cat = "Tukey"))
+summary(glht(glht.bmi)) # *
+```
+
+## Plot
+
+```{r eval=FALSE}
+######### Plotting
+plot <- ARG_load_clean
+# Assigning variable names
+group_names <- c("0-4 months", "≥ 5 months")
+plot$breastf <- group_names[plot$breastf]
+group_names <- c("Not overweight", "Overweight", "Obese")
+plot$bmi_cat <- group_names[plot$bmi_cat]
+# Rename
+breast <- plot[plot$breastf %in% c("0-4 months", "≥ 5 months"), ]
+breast$breastf <- factor(breast$breastf, levels = c("0-4 months", "≥ 5 months"))
+bmi <- plot[plot$bmi_cat %in% c("Not overweight", "Overweight"), ]
+bmi$bmi_cat <- factor(bmi$bmi_cat, c("Not overweight", "Overweight"))
+# Plot
+pairwise <- tibble::tribble(
+  ~group1, ~group2, ~p.signif, ~y.position,
+  "Not overweight", "Overweight", "*", 152)
+a <- ggplot(bmi, aes(x = bmi_cat, y = SUM_norm)) +
+  geom_boxplot(outlier.shape = NA, fill = c("#FDBF6F", "#FF7F00")) +
+  geom_jitter(width = 0.2, size = 0.5) + 
+  theme_classic() +
+  labs(x = "", y = "ARG load") +
+  theme(axis.text = element_text(color = "black"),
+        axis.ticks = element_line(color = "black")) + 
+  add_pvalue(pairwise, label.size = 6)
+# Plot
+pairwise <- tibble::tribble(
+  ~group1, ~group2, ~p.signif, ~y.position,
+  "0-4 months", "≥ 5 months", "*", 152)
+b <- ggplot(breast, aes(x = breastf, y = SUM_norm)) +
+  geom_boxplot(outlier.shape = NA, fill = c("#FFFF99", "#B15928")) +
+  geom_jitter(width = 0.2, size = 0.5) + 
+  theme_classic() +
+  theme_classic() +
+  theme(axis.text = element_text(color = "black"),
+        axis.ticks = element_line(color = "black")) +
+  labs(x = "", y = "ARG load") + 
+  add_pvalue(pairwise, label.size = 6)
+# Plot
+gamma_smooth <- function(...) {
+  geom_smooth(method = "glm", method.args = list(family = "Gamma"(link="log")))}
+c <- ggplot(plot, aes(x = age, y = SUM_norm)) +
+  gamma_smooth() +
+  geom_point(size = 0.5) +
+  theme_classic() +
+  theme(axis.text = element_text(color = "black"),
+        axis.ticks = element_line(color = "black")) +
+  labs(x = "Age (years)", y = "ARG load")
+```
+
+```{r eval=FALSE}
+plot_grid(a, b, c, ncol = 3)
+```
+
+# Alpha diversity analysis
+
+## Species
+
+### Rarefaction
+
+```{r eval=FALSE}
+phylo <- convertToPhyloseq(species, assay.type = "scale_norm")
+# Define the number of iterations
+num_iterations <- 100
+# Initialize an empty list for storing results
+avgrichness <- vector("list", length = num_iterations)
+# Parallelize the rarefaction process
+cl <- makeCluster(detectCores()-1)  # Create a cluster
+clusterEvalQ(cl, library(phyloseq))  # Load library in each worker
+clusterExport(cl, "phylo")  # Export phylo to each worker
+# Parallel loop for rarefaction
+results <- parLapply(cl, 1:num_iterations, function(j) {
+set.seed(69 * j)
+rarefied <- rarefy_even_depth(phylo, sample.size = min(sample_sums(phylo)), rngseed = FALSE, replace = FALSE,  trimOTUs = TRUE)
+richness <- estimate_richness(rarefied)
+richness$sample <- sample_names(phylo)
+rownames(richness) <- seq(1 + nrow(richness) * (j - 1), nrow(richness) * j)
+return(richness)
+})
+# Combine results
+for (j in 1:num_iterations) {
+avgrichness[[j]] <- results[[j]]
+}
+# Stop the cluster
+stopCluster(cl)
+### Combine rarefaction results
+richness <- do.call("rbind",avgrichness)
+richness <- base::cbind(richness, Site = gsub(".*\\.(.*\\..*)\\.[0-9]", "\\1", richness$sample))
+### Shannon
+richness_shannon <- aggregate(Shannon ~ sample, richness, mean)[2]
+richness_shannon <- base::cbind(richness_shannon, aggregate(Shannon ~ sample, richness, stats::sd)[2])
+rownames(richness_shannon) <- colnames(species)
+colnames(richness_shannon)[2] <- c("SD")
+richness_shannon$group_new <- colData(species)$group_new
+### Simpson
+richness_InvSimpson <- aggregate(InvSimpson ~ sample, richness, mean)[2]
+richness_InvSimpson <- base::cbind(richness_InvSimpson, aggregate(InvSimpson ~ sample, richness, stats::sd)[2])
+rownames(richness_InvSimpson) <- colnames(species)
+colnames(richness_InvSimpson)[2] <- c("SD")
+richness_InvSimpson$group_new <- colData(species)$group_new
+### Chao1
+richness_Chao1 <- aggregate(Chao1 ~ sample, richness, mean)[2]
+richness_Chao1 <- base::cbind(richness_Chao1, aggregate(Chao1 ~ sample, richness, stats::sd)[2])
+rownames(richness_Chao1) <- colnames(species)
+colnames(richness_Chao1)[2] <- c("SD")
+richness_Chao1$group_new <- colData(species)$group_new
+```
+
+```{r eval=FALSE}
+### Testing and plotting
+# Shannon
+df <- richness_shannon
+df$group_new <- factor(df$group_new, levels = c("Farm", "Farm_ref", "Steiner", "Steiner_ref"))
+df0 <- df[df$group_new == "Steiner" | df$group_new == "Steiner_ref", ]
+df1 <- df[df$group_new == "Farm" | df$group_new == "Farm_ref", ]
+#shapiro.test(df$Shannon)
+#wilcox.test(df0[df0$group_new == "Steiner", "Shannon"], df0[df0$group_new == "Steiner_ref", "Shannon"], alternative = "two.sided", conf.level = 0.95, paired = F)
+### p-value = 0.3058
+#wilcox.test(df1[df1$group_new == "Farm", "Shannon"], df1[df1$group_new == "Farm_ref", "Shannon"], alternative = "two.sided", conf.level = 0.95, paired = F)
+### p-value = 0.8278
+pairwise <- tibble::tribble(
+  ~group1, ~group2, ~p.signif, ~y.position,
+  "Farm", "Farm_ref", "ns", 5,
+  "Steiner", "Steiner_ref", "ns", 5)
+taxa_shannon <- ggplot(df, aes(x = group_new, y = Shannon)) +
+  # Outliers are removed, because otherwise each data point would be plotted twice; 
+  # as an outlier of boxplot and as a point of dotplot.
+  geom_boxplot(outlier.shape = NA, fill = c("#33A02C", "#B2DF8A", "#6A3D9A", "#CAB2D6")) +
+  geom_jitter(width = 0.2, size = 1) + 
+  add_pvalue(pairwise) +
+  theme_classic() +
+  xlab(NULL) +
+  scale_x_discrete(labels=c("Farm_ref" = "Farm ref", "Steiner_ref" = "Steiner ref")) +
+  ylab("Shannon diversity") +
+  labs(title = expression("Taxa")) +
+  theme(plot.title = element_text(size = 10, hjust = 0.5, vjust = -3.5),
+          axis.text = element_text(color = "black"),
+          axis.ticks = element_line(color = "black"))
+# Simpson
+df <- richness_InvSimpson
+df$group_new <- factor(df$group_new, levels = c("Farm", "Farm_ref", "Steiner", "Steiner_ref"))
+df0 <- df[df$group_new == "Steiner" | df$group_new == "Steiner_ref", ]
+df1 <- df[df$group_new == "Farm" | df$group_new == "Farm_ref", ]
+shapiro.test(df$InvSimpson)
+#wilcox.test(df0[df0$group_new == "Steiner", "InvSimpson"], df0[df0$group_new == "Steiner_ref", "InvSimpson"], alternative = "two.sided", conf.level = 0.95, paired = F)
+### p-value = 0.4613
+#wilcox.test(df1[df1$group_new == "Farm", "InvSimpson"], df1[df1$group_new == "Farm_ref", "InvSimpson"], alternative = "two.sided", conf.level = 0.95, paired = F)
+### p-value = 0.6988
+pairwise <- tibble::tribble(
+  ~group1, ~group2, ~p.signif, ~y.position,
+  "Farm", "Farm_ref", "ns", 66,
+  "Steiner", "Steiner_ref", "ns", 66)
+taxa_simpson <- ggplot(df, aes(x = group_new, y = InvSimpson)) +
+  geom_boxplot(outlier.shape = NA, fill = c("#33A02C", "#B2DF8A", "#6A3D9A", "#CAB2D6")) + 
+  geom_jitter(width = 0.2, size = 1) + 
+  add_pvalue(pairwise) +
+  theme_classic() +
+  xlab(NULL) +
+  scale_x_discrete(labels=c("Farm_ref" = "Farm ref", "Steiner_ref" = "Steiner ref")) +
+  ylab("Inverse Simpson diversity") +
+  labs(title = expression("Taxa")) +
+  theme(plot.title = element_text(size = 10, hjust = 0.5, vjust = -3.5),
+          axis.text = element_text(color = "black"),
+          axis.ticks = element_line(color = "black"))
+# Chao1
+df <- richness_Chao1
+df$group_new <- factor(df$group_new, levels = c("Farm", "Farm_ref", "Steiner", "Steiner_ref"))
+df0 <- df[df$group_new == "Steiner" | df$group_new == "Steiner_ref", ]
+df1 <- df[df$group_new == "Farm" | df$group_new == "Farm_ref", ]
+shapiro.test(df$Chao1)
+wilcox.test(df0[df0$group_new == "Steiner", "Chao1"], df0[df0$group_new == "Steiner_ref", "Chao1"], alternative = "two.sided", conf.level = 0.95, paired = F)
+### p-value = 0.08286
+wilcox.test(df1[df1$group_new == "Farm", "Chao1"], df1[df1$group_new == "Farm_ref", "Chao1"], alternative = "two.sided", conf.level = 0.95, paired = F)
+### p-value = 0.9804
+pairwise <- tibble::tribble(
+  ~group1, ~group2, ~p.signif, ~y.position,
+  "Farm", "Farm_ref", "ns", 420,
+  "Steiner", "Steiner_ref", "ns", 420)
+taxa_chao1 <- ggplot(df, aes(x = group_new, y = Chao1)) +
+  geom_boxplot(outlier.shape = NA, fill = c("#33A02C", "#B2DF8A", "#6A3D9A", "#CAB2D6")) + 
+  geom_jitter(width = 0.2, size = 1) + 
+  add_pvalue(pairwise) +
+  theme_classic() +
+  xlab(NULL) +
+  scale_x_discrete(labels=c("Farm_ref" = "Farm ref", "Steiner_ref" = "Steiner ref")) +
+  ylab("Chao1 diversity") +
+  labs(title = expression("Taxa")) +
+  theme(plot.title = element_text(size = 10, hjust = 0.5, vjust = -3.5),
+          axis.text = element_text(color = "black"),
+          axis.ticks = element_line(color = "black"))
+```
+
+## ARGs
+
+```{r eval=FALSE}
+### Shannon
+Shannon_ARG <- mia::addAlpha(ARG, assay.type = "scale_norm", index = "shannon", name = "shannon")
+df <- as.data.frame(colData(Shannon_ARG))
+df$group_new <- factor(df$group_new, levels = c("Farm", "Farm_ref", "Steiner", "Steiner_ref"))
+df0 <- df[df$group_new == "Steiner" | df$group_new == "Steiner_ref", ]
+df1 <- df[df$group_new == "Farm" | df$group_new == "Farm_ref", ]
+# Shapiro-Wilk test
+#shapiro.test(df$shannon)
+### p-value = 0.0368
+# Mann–Whitney U test
+#wilcox.test(df0[df0$group_new == "Steiner", "shannon"], df0[df0$group_new == "Steiner_ref", "shannon"], alternative = "two.sided", conf.level = 0.95, paired = F)
+### p-value = 0.9101
+#wilcox.test(df1[df1$group_new == "Farm", "shannon"], df1[df1$group_new == "Farm_ref", "shannon"], alternative = "two.sided", conf.level = 0.95, paired = F)
+### p-value = 0.3959
+# Custom p-values/significance codes for plotting
+pairwise <- tibble::tribble(
+  ~group1, ~group2, ~p.signif, ~y.position,
+  "Farm", "Farm_ref", "ns", 2.8,
+  "Steiner", "Steiner_ref", "ns", 2.8)
+ARG_shannon <- ggplot(df, aes(x = group_new, y = shannon)) +
+  # Outliers are removed, because otherwise each data point would be plotted twice; 
+  # as an outlier of boxplot and as a point of dotplot.
+  geom_boxplot(outlier.shape = NA, fill = c("#33A02C", "#B2DF8A", "#6A3D9A", "#CAB2D6")) +
+  geom_jitter(width = 0.2, size = 1) + 
+  add_pvalue(pairwise) +
+  theme_classic() +
+  xlab(NULL) +
+  scale_x_discrete(labels=c("Farm_ref" = "Farm ref", "Steiner_ref" = "Steiner ref")) +
+  ylab("Shannon diversity") +
+  labs(title = expression("ARGs")) +
+  theme(plot.title = element_text(size = 10, hjust = 0.5, vjust = -3.5),
+          axis.text = element_text(color = "black"),
+          axis.ticks = element_line(color = "black"))
+### Inverse simpson
+Simpson_ARG <- mia::addAlpha(ARG, assay.type = "scale_norm", index = "inverse_simpson", name = "inverse_simpson")
+df <- as.data.frame(colData(Simpson_ARG))
+df$group_new <- factor(df$group_new, levels = c("Farm", "Farm_ref", "Steiner", "Steiner_ref"))
+df0 <- df[df$group_new == "Steiner" | df$group_new == "Steiner_ref", ]
+df1 <- df[df$group_new == "Farm" | df$group_new == "Farm_ref", ]
+#shapiro.test(df$inverse_simpson)
+#wilcox.test(df0[df0$group_new == "Steiner", "inverse_simpson"], df0[df0$group_new == "Steiner_ref", "inverse_simpson"], alternative = "two.sided", conf.level = 0.95, paired = F)
+### p-value = 0.955
+#wilcox.test(df1[df1$group_new == "Farm", "inverse_simpson"], df1[df1$group_new == "Farm_ref", "inverse_simpson"], alternative = "two.sided", conf.level = 0.95, paired = F)
+### p-value = 0.3825
+pairwise <- tibble::tribble(
+  ~group1, ~group2, ~p.signif, ~y.position,
+  "Farm", "Farm_ref", "ns", 11.5,
+  "Steiner", "Steiner_ref", "ns", 11.5)
+ARG_simpson <- ggplot(df, aes(x = group_new, y = inverse_simpson)) +
+  geom_boxplot(outlier.shape = NA, fill = c("#33A02C", "#B2DF8A", "#6A3D9A", "#CAB2D6")) + 
+  geom_jitter(width = 0.2, size = 1) + 
+  add_pvalue(pairwise) +
+  theme_classic() +
+  xlab(NULL) +
+  scale_x_discrete(labels=c("Farm_ref" = "Farm ref", "Steiner_ref" = "Steiner ref")) +
+  ylab("Inverse Simpson diversity") +
+  labs(title = expression("ARGs")) +
+  theme(plot.title = element_text(size = 10, hjust = 0.5, vjust = -3.5),
+        axis.text = element_text(color = "black"),
+        axis.ticks = element_line(color = "black"))
+### Chao1
+Shannon_ARG <- mia::addAlpha(ARG, assay.type = "scale_norm", index = "chao1_richness", name = "chao1")
+df <- as.data.frame(colData(Shannon_ARG))
+df$group_new <- factor(df$group_new, levels = c("Farm", "Farm_ref", "Steiner", "Steiner_ref"))
+df0 <- df[df$group_new == "Steiner" | df$group_new == "Steiner_ref", ]
+df1 <- df[df$group_new == "Farm" | df$group_new == "Farm_ref", ]
+# Shapiro-Wilk test
+shapiro.test(df$chao1)
+### p-value = 1.979e-09
+# Mann–Whitney U test
+wilcox.test(df0[df0$group_new == "Steiner", "chao1"], df0[df0$group_new == "Steiner_ref", "chao1"], alternative = "two.sided", conf.level = 0.95, paired = F)
+### p-value = 0.9538
+wilcox.test(df1[df1$group_new == "Farm", "chao1"], df1[df1$group_new == "Farm_ref", "chao1"], alternative = "two.sided", conf.level = 0.95, paired = F)
+### p-value = 0.951
+# Custom p-values/significance codes for plotting
+pairwise <- tibble::tribble(
+  ~group1, ~group2, ~p.signif, ~y.position,
+  "Farm", "Farm_ref", "ns", 120,
+  "Steiner", "Steiner_ref", "ns", 120)
+ARG_chao1 <- ggplot(df, aes(x = group_new, y = chao1)) +
+  # Outliers are removed, because otherwise each data point would be plotted twice; 
+  # as an outlier of boxplot and as a point of dotplot.
+  geom_boxplot(outlier.shape = NA, fill = c("#33A02C", "#B2DF8A", "#6A3D9A", "#CAB2D6")) +
+  geom_jitter(width = 0.2, size = 1) + 
+  add_pvalue(pairwise) +
+  theme_classic() +
+  xlab(NULL) +
+  scale_x_discrete(labels=c("Farm_ref" = "Farm ref", "Steiner_ref" = "Steiner ref")) +
+  ylab("Chao1 diversity") +
+  labs(title = expression("ARGs")) +
+  theme(plot.title = element_text(size = 10, hjust = 0.5, vjust = -3.5),
+          axis.text = element_text(color = "black"),
+          axis.ticks = element_line(color = "black"))
+```
+
+## Plot
+
+```{r eval=FALSE}
+plot_grid(taxa_shannon, ARG_shannon, taxa_simpson, ARG_simpson, taxa_chao1, ARG_chao1, rows = 3, align = "hv")
+```
+
+# Bray-Curtis index
+
+## PCoA Taxa
+
+### Rarefaction
+
+```{r eval=FALSE}
+### Prepare TSE for Steiner and Steiner references
+# Subset based on groups
+tax_steiner <- species[ , species$group_new %in% c("Steiner", "Steiner_ref")]
+# Identify taxa with 0 counts in all samples
+zero_counts <- rowSums(assay(tax_steiner) == 0) == ncol(assay(tax_steiner))
+# Subset to exclude rows with zero counts in all samples
+tax_steiner <- tax_steiner[!zero_counts, ]
+# Set correct reference group
+tax_steiner$group_new <- relevel(tax_steiner$group_new, ref = "Steiner_ref")
+### Prepare TSE for farm and farm references
+# Subset based on groups
+tax_farm <- species[ , species$group_new %in% c("Farm", "Farm_ref")]
+# Identify taxa with 0 counts in all samples
+zero_counts <- rowSums(assay(tax_farm) == 0) == ncol(assay(tax_farm))
+# Subset to exclude rows with zero counts in all samples
+tax_farm <- tax_farm[!zero_counts, ]
+# Set correct reference group
+tax_farm$group_new <- relevel(tax_farm$group_new, ref = "Farm_ref")
+### Rarefaction
+param <- SnowParam(workers = detectCores()-1)
+# Steiner
+set.seed(666)
+bray_steiner <- getDissimilarity(tax_steiner, ncomponents = 5, method = "bray", sample = min(colSums(assay(tax_steiner, "scale_norm"))), BPPARAM = param, assay.type = "scale_norm", niter = 100, keep_dist = TRUE)
+set.seed(666)
+PCoA_steiner <- cmdscale(bray_steiner, k = 5, eig = TRUE, add = FALSE, x.ret = FALSE, list. = TRUE)
+reducedDims(tax_steiner)$PCoA <- PCoA_steiner$points
+# Farm
+set.seed(666)
+bray_farm <- getDissimilarity(tax_farm, ncomponents = 5, method = "bray", sample = min(colSums(assay(tax_farm, "scale_norm"))), BPPARAM = param, assay.type = "scale_norm", niter = 100, keep_dist = TRUE)
+set.seed(666)
+PCoA_farm <- cmdscale(bray_farm, k = 5, eig = TRUE, add = FALSE, x.ret = FALSE, list. = TRUE)
+reducedDims(tax_farm)$PCoA <- PCoA_farm$points
+```
+
+```{r eval=FALSE}
+### Steiners and references
+pSteiner <- plotReducedDim(tax_steiner, "PCoA",
+                    colour_by = "group_new")
+# Calculate explained variance
+e_Steiner <- PCoA_steiner$eig
+rel_eig_Steiner <- e_Steiner / sum(e_Steiner[e_Steiner > 0])
+# Add explained variance for each axis
+pSteiner <- pSteiner + labs(x = paste("PCoA 1 (", round(100 * rel_eig_Steiner[[1]], 1), "%", ")", sep = ""),
+              y = paste("PCoA 2 (", round(100 * rel_eig_Steiner[[2]], 1), "%", ")", sep = "")) +
+  geom_point(aes(color = colData(tax_steiner)$group_new), shape = 16, size = 2) +
+  scale_color_manual(values = c("#CAB2D6", "#6A3D9A"), name = NULL, labels = c("Steiner ref", "Steiner")) +
+  theme(legend.position = "top", 
+        legend.justification = "right",
+        legend.text = element_text(size = 10)) + 
+  labs(title = expression("Taxa - Bray-Curtis")) +
+  theme(plot.title = element_text(size = 10, hjust = 0.5, vjust = -7))
+### Farmers and references
+pFarm <- plotReducedDim(tax_farm, "PCoA",
+                    colour_by = "group_new")
+# Calculate explained variance
+e_Farm <- PCoA_farm$eig
+rel_eig_Farm <- e_Farm / sum(e_Farm[e_Farm > 0])
+# Add explained variance for each axis
+pFarm <- pFarm + labs(x = paste("PCoA 1 (", round(100 * rel_eig_Farm[[1]], 1), "%", ")", sep = ""),
+              y = paste("PCoA 2 (", round(100 * rel_eig_Farm[[2]], 1), "%", ")", sep = "")) +
+  geom_point(aes(color = colData(tax_farm)$group_new), shape = 16, size = 2) +
+  scale_color_manual(values = c("#B2DF8A", "#33A02C"), name = NULL, labels = c("Farm ref", "Farm")) +
+  theme(legend.position = "top", 
+        legend.justification = "right",
+        legend.text = element_text(size = 10)) + 
+  labs(title = expression("Taxa - Bray-Curtis")) +
+  theme(plot.title = element_text(size = 10, hjust = 0.5, vjust = -7))
+```
+
+## PCoA ARGs
+
+```{r eval=FALSE}
+### Steiners and references
+set.seed(666)
+tse_ARG_Steiner <- runMDS(ARG_steiner,
+              FUN = vegan::vegdist,
+              method = "bray",
+              assay.type = "counts",
+              name = "MDS_bray")
+p_ARG_Steiner <- plotReducedDim(tse_ARG_Steiner, "MDS_bray",
+                    colour_by = "group_new")
+# Calculate explained variance
+e_Steiner <- attr(reducedDim(tse_ARG_Steiner, "MDS_bray"), "eig")
+rel_eig_Steiner <- e_Steiner / sum(e_Steiner[e_Steiner > 0])
+# Add explained variance for each axis
+p_ARG_Steiner <- p_ARG_Steiner + labs(x = paste("PCoA 1 (", round(100 * rel_eig_Steiner[[1]], 1), "%", ")", sep = ""),
+              y = paste("PCoA 2 (", round(100 * rel_eig_Steiner[[2]], 1), "%", ")", sep = "")) +
+  geom_point(aes(color = colData(tse_ARG_Steiner)$group_new), shape = 16, size = 2) +
+  scale_color_manual(values = c("#CAB2D6", "#6A3D9A"), name = NULL, labels = c("Steiner ref", "Steiner")) +
+  theme(legend.position = "top", 
+        legend.justification = "right",
+        legend.text = element_text(size = 10)) + 
+  labs(title = expression("ARGs - Bray-Curtis")) +
+  theme(plot.title = element_text(size = 10, hjust = 0.5, vjust = -7))
+### Farmers and references
+set.seed(666)
+tse_ARG_Farm <- runMDS(ARG_farm,
+              FUN = vegan::vegdist,
+              method = "bray",
+              assay.type = "counts",
+              name = "MDS_bray")
+p_ARG_Farm <- plotReducedDim(tse_ARG_Farm, "MDS_bray",
+                    colour_by = "group_new")
+# Calculate explained variance
+e_Farm <- attr(reducedDim(tse_ARG_Farm, "MDS_bray"), "eig")
+rel_eig_Farm <- e_Farm / sum(e_Farm[e_Farm > 0])
+# Add explained variance for each axis
+p_ARG_Farm <- p_ARG_Farm + labs(x = paste("PCoA 1 (", round(100 * rel_eig_Farm[[1]], 1), "%", ")", sep = ""),
+              y = paste("PCoA 2 (", round(100 * rel_eig_Farm[[2]], 1), "%", ")", sep = "")) +
+  geom_point(aes(color = colData(tse_ARG_Farm)$group_new), shape = 16, size = 2) +
+  scale_color_manual(values = c("#B2DF8A", "#33A02C"), name = NULL, labels = c("Farm ref", "Farm")) +
+  theme(legend.position = "top", 
+        legend.justification = "right",
+        legend.text = element_text(size = 10)) + 
+  labs(title = expression("ARGs - Bray-Curtis")) +
+  theme(plot.title = element_text(size = 10, hjust = 0.5, vjust = -7))
+```
+
+# Jaccard index
+
+## PCoA Taxa
+
+### Rarefaction
+
+```{r eval=FALSE}
+### Prepare TSE for Steiner and Steiner references
+# Subset based on groups
+tax_steiner <- species[ , species$group_new %in% c("Steiner", "Steiner_ref")]
+# Identify taxa with 0 counts in all samples
+zero_counts <- rowSums(assay(tax_steiner) == 0) == ncol(assay(tax_steiner))
+# Subset to exclude rows with zero counts in all samples
+tax_steiner <- tax_steiner[!zero_counts, ]
+# Set correct reference group
+tax_steiner$group_new <- relevel(tax_steiner$group_new, ref = "Steiner_ref")
+### Prepare TSE for farm and farm references
+# Subset based on groups
+tax_farm <- species[ , species$group_new %in% c("Farm", "Farm_ref")]
+# Identify taxa with 0 counts in all samples
+zero_counts <- rowSums(assay(tax_farm) == 0) == ncol(assay(tax_farm))
+# Subset to exclude rows with zero counts in all samples
+tax_farm <- tax_farm[!zero_counts, ]
+# Set correct reference group
+tax_farm$group_new <- relevel(tax_farm$group_new, ref = "Farm_ref")
+### Rarefaction
+param <- SnowParam(workers = detectCores()-1)
+# Steiner
+set.seed(666)
+jaccard_steiner <- getDissimilarity(tax_steiner, ncomponents = 5, method = "jaccard", sample = min(colSums(assay(tax_steiner, "scale_norm"))), BPPARAM = param, assay.type = "scale_norm", niter = 100, keep_dist = TRUE)
+set.seed(666)
+PCoA_steiner <- cmdscale(jaccard_steiner, k = 5, eig = TRUE, add = FALSE, x.ret = FALSE, list. = TRUE)
+reducedDims(tax_steiner)$PCoA <- PCoA_steiner$points
+# Farm
+set.seed(666)
+jaccard_farm <- getDissimilarity(tax_farm, ncomponents = 5, method = "jaccard", sample = min(colSums(assay(tax_farm, "scale_norm"))), BPPARAM = param, assay.type = "scale_norm", niter = 100, keep_dist = TRUE)
+set.seed(666)
+PCoA_farm <- cmdscale(jaccard_farm, k = 5, eig = TRUE, add = FALSE, x.ret = FALSE, list. = TRUE)
+reducedDims(tax_farm)$PCoA <- PCoA_farm$points
+```
+
+```{r eval=FALSE}
+### Steiners and references
+pSteiner_jacc <- plotReducedDim(tax_steiner, "PCoA",
+                    colour_by = "group_new")
+# Calculate explained variance
+e_Steiner <- PCoA_steiner$eig
+rel_eig_Steiner <- e_Steiner / sum(e_Steiner[e_Steiner > 0])
+# Add explained variance for each axis
+pSteiner_jacc <- pSteiner_jacc + labs(x = paste("PCoA 1 (", round(100 * rel_eig_Steiner[[1]], 1), "%", ")", sep = ""),
+              y = paste("PCoA 2 (", round(100 * rel_eig_Steiner[[2]], 1), "%", ")", sep = "")) +
+  geom_point(aes(color = colData(tax_steiner)$group_new), shape = 16, size = 2) +
+  scale_color_manual(values = c("#CAB2D6", "#6A3D9A"), name = NULL, labels = c("Steiner ref", "Steiner")) +
+  theme(legend.position = "top", 
+        legend.justification = "right",
+       legend.text = element_text(size = 10)) + 
+  labs(title = expression("Taxa - Jaccard")) +
+  theme(plot.title = element_text(size = 10, hjust = 0.5, vjust = -3))
+### Farmers and references
+pFarm_jacc <- plotReducedDim(tax_farm, "PCoA",
+                    colour_by = "group_new")
+# Calculate explained variance
+e_Farm <- PCoA_farm$eig
+rel_eig_Farm <- e_Farm / sum(e_Farm[e_Farm > 0])
+# Add explained variance for each axis
+pFarm_jacc <- pFarm_jacc + labs(x = paste("PCoA 1 (", round(100 * rel_eig_Farm[[1]], 1), "%", ")", sep = ""),
+              y = paste("PCoA 2 (", round(100 * rel_eig_Farm[[2]], 1), "%", ")", sep = "")) +
+  geom_point(aes(color = colData(tax_farm)$group_new), shape = 16, size = 2) +
+  scale_color_manual(values = c("#B2DF8A", "#33A02C"), name = NULL, labels = c("Farm ref", "Farm")) +
+  theme(legend.position = "top", 
+        legend.justification = "right",
+        legend.text = element_text(size = 10)) + 
+  labs(title = expression("Taxa - Jaccard")) +
+  theme(plot.title = element_text(size = 10, hjust = 0.5, vjust = -3))
+```
+
+## PCoA ARGs
+
+```{r eval=FALSE}
+### Steiners and references
+set.seed(666)
+tse_ARG_Steiner <- runMDS(ARG_steiner,
+              FUN = vegan::vegdist,
+              method = "jaccard",
+              assay.type = "counts",
+              name = "MDS_jaccard")
+p_ARG_Steiner_jacc <- plotReducedDim(tse_ARG_Steiner, "MDS_jaccard",
+                    colour_by = "group_new")
+# Calculate explained variance
+e_Steiner <- attr(reducedDim(tse_ARG_Steiner, "MDS_jaccard"), "eig")
+rel_eig_Steiner <- e_Steiner / sum(e_Steiner[e_Steiner > 0])
+# Add explained variance for each axis
+p_ARG_Steiner_jacc <- p_ARG_Steiner_jacc + labs(x = paste("PCoA 1 (", round(100 * rel_eig_Steiner[[1]], 1), "%", ")", sep = ""),
+              y = paste("PCoA 2 (", round(100 * rel_eig_Steiner[[2]], 1), "%", ")", sep = "")) +
+  geom_point(aes(color = colData(tse_ARG_Steiner)$group_new), shape = 16, size = 2) +
+  scale_color_manual(values = c("#CAB2D6", "#6A3D9A"), name = NULL, labels = c("Steiner ref", "Steiner")) +
+  theme(legend.position = "top", 
+        legend.justification = "right",
+        legend.text = element_text(size = 10)) + 
+  labs(title = expression("ARGs - Jaccard")) +
+  theme(plot.title = element_text(size = 10, hjust = 0.5, vjust = -3))
+### Farmers and references
+set.seed(666)
+tse_ARG_Farm <- runMDS(ARG_farm,
+              FUN = vegan::vegdist,
+              method = "jaccard",
+              assay.type = "counts",
+              name = "MDS_jaccard")
+p_ARG_Farm_jacc <- plotReducedDim(tse_ARG_Farm, "MDS_jaccard",
+                    colour_by = "group_new")
+# Calculate explained variance
+e_Farm <- attr(reducedDim(tse_ARG_Farm, "MDS_jaccard"), "eig")
+rel_eig_Farm <- e_Farm / sum(e_Farm[e_Farm > 0])
+# Add explained variance for each axis
+p_ARG_Farm_jacc <- p_ARG_Farm_jacc + labs(x = paste("PCoA 1 (", round(100 * rel_eig_Farm[[1]], 1), "%", ")", sep = ""),
+              y = paste("PCoA 2 (", round(100 * rel_eig_Farm[[2]], 1), "%", ")", sep = "")) +
+  geom_point(aes(color = colData(tse_ARG_Farm)$group_new), shape = 16, size = 2) +
+  scale_color_manual(values = c("#B2DF8A", "#33A02C"), name = NULL, labels = c("Farm ref", "Farm")) +
+  theme(legend.position = "top", 
+        legend.justification = "right",
+        legend.text = element_text(size = 10)) + 
+  labs(title = expression("ARGs - Jaccard")) +
+  theme(plot.title = element_text(size = 10, hjust = 0.5, vjust = -3))
+```
+
+## Plot
+
+```{r eval=FALSE}
+plot_grid(pFarm, p_ARG_Farm, pSteiner, p_ARG_Steiner, pFarm_jacc, p_ARG_Farm_jacc, pSteiner_jacc, p_ARG_Steiner_jacc, nrow = 4, align = "hv")
+```
+
+# Venn diagrams
+
+## Taxa
+
+```{r eval=FALSE}
+# Define the number of iterations
+num_iterations <- 100
+# Initialize an empty list for storing results
+abstax <- vector("list", length = num_iterations)
+# Parallelize the rarefaction process
+cl <- makeCluster(detectCores()-1)  # Create a cluster
+clusterEvalQ(cl, library(mia))  # Load library in each worker
+clusterExport(cl, "species")  # Export phylovenn to each worker
+# Parallel loop for rarefaction
+results <- parLapply(cl, 1:num_iterations, function(j) {
+set.seed(69 * j)
+rarefied <- rarefyAssay(species, assay.type = "group", sample = min(colSums(assay(species, "group"))), replace = FALSE, name = "rare")
+otu <- as.data.frame(assay(rarefied, "rare"))
+rownames(otu) <- paste0(rownames(otu), "_", j)
+return(otu)
+})
+# Combine results
+for (j in 1:num_iterations) {
+abstax[[j]] <- results[[j]]
+}
+# Stop the cluster
+stopCluster(cl)
+# Combine the 100 rarefied tables
+taxvenn <- do.call("rbind", abstax)
+taxvenn$tax <- rownames(taxvenn)
+taxvenn$tax <- gsub("_\\d+$", "", taxvenn$tax)
+# Aggregate
+taxvenn_summary <- taxvenn %>%
+  group_by(tax) %>%
+  summarise(across(everything(), sum)) 
+taxvenn_summary <- as.data.frame(taxvenn_summary)
+row.names(taxvenn_summary) <- taxvenn_summary$tax
+taxvenn_summary <- subset(taxvenn_summary, select = -c(tax))
+# Extract row names from assay
+assay_row_names <- rownames(assay(species, "counts"))
+# Reorder taxvenn_summary to match assay row names
+taxvenn_summary <- taxvenn_summary[assay_row_names, ]
+```
+
+```{r eval=FALSE}
+assay(species, "venn") <- as.matrix(taxvenn_summary)
+# Subset the TSE according to lifestyle groups
+a <- species[ , species$group_new %in% c("Farm")]
+b <- species[ , species$group_new %in% c("Steiner")]
+c <- species[ , species$group_new %in% c("Farm_ref")]
+d <- species[ , species$group_new %in% c("Steiner_ref")]
+# Contains count data for taxa
+a1 <- as.data.frame(assay(a, "venn"))
+b1 <- as.data.frame(assay(b, "venn"))
+c1 <- as.data.frame(assay(c, "venn"))
+d1 <- as.data.frame(assay(d, "venn"))
+# Calculate rowSums
+# a
+SUMa <- rowSums(a1)
+a2 <- base::cbind(a1, RowSums_a = SUMa)
+# b
+SUMb <- rowSums(b1)
+b2 <- base::cbind(b1, RowSums_b = SUMb)
+# c
+SUMc <- rowSums(c1)
+c2 <- base::cbind(c1, RowSums_c = SUMc)
+# d
+SUMd <- rowSums(d1)
+d2 <- base::cbind(d1, RowSums_d = SUMd)
+# Merge tables
+merged <- base::cbind(a2, b2, c2, d2)
+# Extract only necessary columns
+merged <- merged %>% dplyr::select(RowSums_a, RowSums_b, RowSums_c, RowSums_d)
+# Convert values > 0 to 1
+cols_to_convert <- c("RowSums_a", "RowSums_b", "RowSums_c", "RowSums_d")
+merged <- merged %>% mutate(across(all_of(cols_to_convert), ~ ifelse(. > 0, 1, 0)))
+# Number of taxa per group
+colSums(merged)
+### Statistical testing
+data <- matrix(c(243, 1089-243, 99, 853-99, 58, 781-58, 34, 541-34), nrow = 4, byrow = TRUE)
+rownames(data) <- c("Farm", "Steiner", "Farm ref", "Steiner ref")
+colnames(data) <- c("Unique Taxa", "Non-Unique Taxa")
+chisq.test(data)
+prop_tax <- pairwise.prop.test(data, p.adjust.method = "BH")
+prop_tax$p.value
+heat <- prop_tax$p.value
+heat[1, 1] <- 243/1089*100 - 99/853*100
+heat[2, 1] <- 243/1089*100 - 58/781*100
+heat[3, 1] <- 243/1089*100 - 34/541*100
+heat[1, 2] <- 0  
+heat[2, 2] <- 99/853*100 - 58/781*100
+heat[3, 2] <- 99/853*100 - 34/541*100
+heat[1, 3] <- 0
+heat[2, 3] <- 0
+heat[3, 3] <- 58/781*100 - 34/541*100
+add_signif <- function(j, i, x, y, width, height, fill) {
+    p_value <- prop_tax$p.value[i, j]
+    if (!is.na(p_value)) {
+        if (p_value <= 0.001) {
+            symbol <- "***"
+        } else if (p_value <= 0.01) {
+            symbol <- "**"
+        } else if (p_value <= 0.05) {
+            symbol <- "*"
+        } else {
+            symbol <- "ns"
+        }
+        grid.shadowtext(
+            sprintf("%s", symbol), x, y, gp = gpar(fontsize = 20, col = "white"))
+    }
+}
+p <- Heatmap(heat,
+    cell_fun = add_signif,
+    col = brewer.pal(9, "YlOrRd"),
+    heatmap_legend_param = list(
+    title = "Difference poportion\nunique/total species (%)", 
+    legend_height = unit(6, "cm"),
+    title_gp = gpar(fontsize = 12, fontface = "bold"),
+    title_position = "topcenter"),
+    column_names_rot = 45,
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,)
+draw(p, padding = unit(c(0, 0.5, 0.5, 2.5), "cm")) 
+# Rownames to column
+merged <- merged %>% rownames_to_column(var = "RowNames")
+# Convert columns 2-5 to logical
+merged[, 2:5] <- lapply(merged[, 2:5], as.logical)
+# Save list objects for exclusive species
+colnames(merged) <- c("Species", "Farm", "Steiner", "Farm_ref", "Steiner_ref")
+row.names(merged) <- merged$Species
+# Farm
+subset_farm_true <- subset(merged, Farm == TRUE & Farm_ref == FALSE & Steiner == FALSE & Steiner_ref == FALSE)
+exclusive_farm <- row.names(subset_farm_true)
+base::saveRDS(exclusive_farm, file = "exclusive_farm_tax.RData")
+exclusive_farm_tax <- base::readRDS("exclusive_farm_tax.RData")
+# Farm ref
+subset_farmref_true <- subset(merged, Farm == FALSE & Farm_ref == TRUE & Steiner == FALSE & Steiner_ref == FALSE)
+exclusive_farm_ref <- row.names(subset_farmref_true)
+base::saveRDS(exclusive_farm_ref, file = "exclusive_farm_ref_tax.RData")
+exclusive_farm_ref_tax <- base::readRDS("exclusive_farm_ref_tax.RData")
+# Steiner
+subset_steiner_true <- subset(merged, Farm == FALSE & Farm_ref == FALSE & Steiner == TRUE & Steiner_ref == FALSE)
+exclusive_steiner <- row.names(subset_steiner_true)
+base::saveRDS(exclusive_steiner, file = "exclusive_steiner_tax.RData")
+exclusive_steiner_tax <- base::readRDS("exclusive_steiner_tax.RData")
+# Steiner ref
+subset_steinerref_true <- subset(merged, Farm == FALSE & Farm_ref == FALSE & Steiner == FALSE & Steiner_ref == TRUE)
+exclusive_steiner_ref <- row.names(subset_steinerref_true)
+base::saveRDS(exclusive_steiner_ref, file = "exclusive_steiner_ref_tax.RData")
+exclusive_steiner_ref_tax <- base::readRDS("exclusive_steiner_ref_tax.RData")
+# Change colnames
+colnames(merged) <- c("Species", "Farm", "Steiner", "Farm ref", "Steiner ref")
+# Plot
+venn_tax <- ggplot(merged, aes(A = `Farm ref`, B = `Farm`, C = `Steiner`, D = `Steiner ref`)) + geom_venn(set_name_size = 3.75, text_size = 3.75, fill_color = c("#B2DF8A", "#33A02C", "#6A3D9A", "#CAB2D6"), stroke_size = 0.5, show_percentage = FALSE) + theme_void() + coord_fixed() + annotate("text", x = 0, y = 1.5, label = "Species", size = 3.75, color = "black", fontface ="bold")
+```
+
+## ARGs
+
+```{r eval=FALSE}
+# Define the number of iterations
+num_iterations <- 100
+# Initialize an empty list for storing results
+absarg <- vector("list", length = num_iterations)
+# Parallelize the rarefaction process
+cl <- makeCluster(detectCores()-1)  # Create a cluster
+clusterEvalQ(cl, library(phyloseq))  # Load library in each worker
+clusterExport(cl, "ARG")  # Export ARG to each worker
+# Parallel loop for rarefaction
+results <- parLapply(cl, 1:num_iterations, function(j) {
+set.seed(69 * j)
+rarefied <- rarefyAssay(ARG, assay.type = "group", sample = min(colSums(assay(ARG, "group"))), replace = FALSE, name = "rare")
+otu <- as.data.frame(assay(rarefied, "rare"))
+rownames(otu) <- paste0(rownames(otu), "_", j)
+return(otu)
+})
+# Combine results
+for (j in 1:num_iterations) {
+absarg[[j]] <- results[[j]]
+}
+# Stop the cluster
+stopCluster(cl)
+# Combine the 100 rarefied tables
+argvenn <- do.call("rbind", absarg)
+argvenn$tax <- rownames(argvenn)
+argvenn$tax <- gsub("_\\d+$", "", argvenn$tax)
+# Aggregate
+argvenn_summary <- argvenn %>%
+  group_by(tax) %>%
+  summarise(across(everything(), sum)) 
+argvenn_summary <- as.data.frame(argvenn_summary)
+row.names(argvenn_summary) <- argvenn_summary$tax
+argvenn_summary <- subset(argvenn_summary, select = -c(tax))
+# Extract row names from assay
+assay_row_names <- rownames(assay(ARG, "counts"))
+# Reorder argvenn_summary to match assay row names
+argvenn_summary <- argvenn_summary[assay_row_names, ]
+```
+
+```{r eval=FALSE}
+assay(ARG, "venn") <- as.matrix(argvenn_summary)
+# Subset the TSE according to lifestyle groups
+a <- ARG[ , ARG$group_new %in% c("Farm")]
+b <- ARG[ , ARG$group_new %in% c("Steiner")]
+c <- ARG[ , ARG$group_new %in% c("Farm_ref")]
+d <- ARG[ , ARG$group_new %in% c("Steiner_ref")]
+# Contains count data for taxa
+a1 <- as.data.frame(assay(a, "venn"))
+b1 <- as.data.frame(assay(b, "venn"))
+c1 <- as.data.frame(assay(c, "venn"))
+d1 <- as.data.frame(assay(d, "venn"))
+# Calculate rowSums
+# a
+SUMa <- rowSums(a1)
+a2 <- base::cbind(a1, RowSums_a = SUMa)
+# b
+SUMb <- rowSums(b1)
+b2 <- base::cbind(b1, RowSums_b = SUMb)
+# c
+SUMc <- rowSums(c1)
+c2 <- base::cbind(c1, RowSums_c = SUMc)
+# d
+SUMd <- rowSums(d1)
+d2 <- base::cbind(d1, RowSums_d = SUMd)
+# Merge tables
+merged <- base::cbind(a2, b2, c2, d2)
+# Extract only necessary columns
+merged <- merged %>% dplyr::select(RowSums_a, RowSums_b, RowSums_c, RowSums_d)
+# Convert values > 0 to 1
+cols_to_convert <- c("RowSums_a", "RowSums_b", "RowSums_c", "RowSums_d")
+merged <- merged %>% mutate(across(all_of(cols_to_convert), ~ ifelse(. > 0, 1, 0)))
+# Number of taxa per group
+colSums(merged)
+### Statistical testing
+data <- matrix(c(89, 228-89, 17, 113-17, 15, 137-15, 10, 91-10), nrow = 4, byrow = TRUE)
+rownames(data) <- c("Farm", "Steiner", "Farm ref", "Steiner ref")
+colnames(data) <- c("Unique Taxa", "Non-Unique Taxa")
+data
+chisq.test(data)
+prop_tax <- pairwise.prop.test(data, p.adjust.method = "BH")
+prop_tax$p.value
+heat <- prop_tax$p.value
+heat[1, 1] <- 89/228*100 - 17/113*100
+heat[2, 1] <- 89/228*100 - 15/137*100
+heat[3, 1] <- 89/228*100 - 10/91*100
+heat[1, 2] <- 0  
+heat[2, 2] <- 17/113*100 - 15/137*100
+heat[3, 2] <- 17/113*100 - 10/91*100
+heat[1, 3] <- 0
+heat[2, 3] <- 0
+heat[3, 3] <- 15/137*100 - 10/91*100
+add_signif <- function(j, i, x, y, width, height, fill) {
+    p_value <- prop_tax$p.value[i, j]
+    if (!is.na(p_value)) {
+        if (p_value <= 0.001) {
+            symbol <- "***"
+        } else if (p_value <= 0.01) {
+            symbol <- "**"
+        } else if (p_value <= 0.05) {
+            symbol <- "*"
+        } else {
+            symbol <- "ns"
+        }
+        grid.shadowtext(
+            sprintf("%s", symbol), x, y, gp = gpar(fontsize = 20, col = "white"))
+    }
+}
+p <- Heatmap(heat,
+    cell_fun = add_signif,
+    col = brewer.pal(9, "YlOrRd"),
+    heatmap_legend_param = list(
+    title = "Difference poportion\nunique/total ARGs (%)", 
+    legend_height = unit(6, "cm"),
+    title_gp = gpar(fontsize = 12, fontface = "bold"),
+    title_position = "topcenter"),
+    column_names_rot = 45,
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,)
+draw(p, padding = unit(c(0, 0.5, 0.5, 2.5), "cm")) 
+# Rownames to column
+merged <- merged %>% rownames_to_column(var = "RowNames")
+# Convert columns 2-5 to logical
+merged[, 2:5] <- lapply(merged[, 2:5], as.logical)
+# Save list objects for exclusive species
+colnames(merged) <- c("Species", "Farm", "Steiner", "Farm_ref", "Steiner_ref")
+row.names(merged) <- merged$Species
+# Farm
+subset_farm_true <- subset(merged, Farm == TRUE & Farm_ref == FALSE & Steiner == FALSE & Steiner_ref == FALSE)
+exclusive_farm <- row.names(subset_farm_true)
+base::saveRDS(exclusive_farm, file = "exclusive_farm_ARG.RData")
+exclusive_farm_ARG <- base::readRDS("exclusive_farm_ARG.RData")
+# Farm ref
+subset_farmref_true <- subset(merged, Farm == FALSE & Farm_ref == TRUE & Steiner == FALSE & Steiner_ref == FALSE)
+exclusive_farm_ref <- row.names(subset_farmref_true)
+base::saveRDS(exclusive_farm_ref, file = "exclusive_farm_ref_ARG.RData")
+exclusive_farm_ref_ARG <- base::readRDS("exclusive_farm_ref_ARG.RData")
+# Steiner
+subset_steiner_true <- subset(merged, Farm == FALSE & Farm_ref == FALSE & Steiner == TRUE & Steiner_ref == FALSE)
+exclusive_steiner <- row.names(subset_steiner_true)
+base::saveRDS(exclusive_steiner, file = "exclusive_steiner_ARG.RData")
+exclusive_steiner_ARG <- base::readRDS("exclusive_steiner_ARG.RData")
+# Steiner ref
+subset_steinerref_true <- subset(merged, Farm == FALSE & Farm_ref == FALSE & Steiner == FALSE & Steiner_ref == TRUE)
+exclusive_steiner_ref <- row.names(subset_steinerref_true)
+base::saveRDS(exclusive_steiner_ref, file = "exclusive_steiner_ref_ARG.RData")
+exclusive_steiner_ref_ARG <- base::readRDS("exclusive_steiner_ref_ARG.RData")
+# Change colnames
+colnames(merged) <- c("Species", "Farm", "Steiner", "Farm ref", "Steiner ref")
+# Plot
+venn_arg <- ggplot(merged, aes(A = `Farm ref`, B = `Farm`, C = `Steiner`, D = `Steiner ref`)) + geom_venn(set_name_size = 3.75, text_size = 3.75, fill_color = c("#B2DF8A", "#33A02C", "#6A3D9A", "#CAB2D6"), stroke_size = 0.5, show_percentage = FALSE) + theme_void() + coord_fixed() + annotate("text", x = 0, y = 1.5, label = "ARGs", size = 3.75, color = "black", fontface ="bold")
+```
+
+```{r eval=FALSE}
+plot_grid(venn_tax, venn_arg, align = "hv")
+```
+
+### Further analysis of the exclusive species and ARGs
+
+#### Taxa
+
+Data preparation
+
+```{r eval=FALSE}
+exclusive_farm_tax <- base::readRDS("exclusive_farm_tax.RData")
+exclusive_farm_ref_tax <- base::readRDS("exclusive_farm_ref_tax.RData")
+exclusive_steiner_tax <- base::readRDS("exclusive_steiner_tax.RData")
+exclusive_steiner_ref_tax <- base::readRDS("exclusive_steiner_ref_tax.RData")
+# Get relative abundances
+species <- transformAssay(species, assay.type = "scale_norm", method = "relabundance")
+```
+
+##### Exclusive farm
+
+```{r eval=FALSE}
+### Subset farm
+exclusive_farm_tax_rel <- species[exclusive_farm_tax, ]
+exclusive_farm_tax_rel <- exclusive_farm_tax_rel[ , exclusive_farm_tax_rel$group_new %in% c("Farm")]
+```
+
+```{r eval=FALSE}
+# Convert to phyloseq
+farmps <- convertToPhyloseq(exclusive_farm_tax_rel, assay.type = "scale_norm")
+# Convert to taxmap
+farmobj <- parse_phyloseq(farmps)
+# Subset to class
+farmobj <- filter_taxa(farmobj, taxon_ranks == "class", supertaxa = TRUE)
+# Get per-taxon counts
+farmobj$data$tax_table <- calc_taxon_abund(farmobj, data = "otu_table", cols = farmobj$data$sample_data$sample_id)
+# Get sample counts
+farmobj$data$tax_occ <- calc_n_samples(farmobj, "tax_table", cols = farmobj$data$sample_data$sample_id)
+# Plot results
+set.seed(666)
+heat_tree(farmobj,
+          node_size = n_obs,
+          node_color = farmobj$data$tax_occ$n_samples,
+          node_label = taxon_names,
+          node_size_axis_label = "Number of OTUs",
+          node_color_axis_label = "Number of samples",
+          node_color_interval = c(1, 37),
+          layout = "davidson-harel",
+          initial_layout = "reingold-tilford")
+```
+
+```{r eval=FALSE}
+exclusive_farm_tax_rel <- subsetByPrevalent(exclusive_farm_tax_rel, rank = "species", assay.type = "relabundance", prevalence = 0, detection = 0.01)
+# 18 species with rel. abundance >= 0.01
+```
+
+##### Exclusive farm ref
+
+```{r eval=FALSE}
+### subset farm ref
+exclusive_farm_ref_tax_rel <- species[exclusive_farm_ref_tax, ]
+exclusive_farm_ref_tax_rel <- exclusive_farm_ref_tax_rel[ , exclusive_farm_ref_tax_rel$group_new %in% c("Farm_ref")]
+```
+
+```{r eval=FALSE}
+# Convert to phyloseq
+farmps <- convertToPhyloseq(exclusive_farm_ref_tax_rel, assay.type = "scale_norm")
+# Convert to taxmap
+farmobj <- parse_phyloseq(farmps)
+# Subset to class
+farmobj <- filter_taxa(farmobj, taxon_ranks == "class", supertaxa = TRUE)
+# Get per-taxon counts
+farmobj$data$tax_table <- calc_taxon_abund(farmobj, data = "otu_table", cols = farmobj$data$sample_data$sample_id)
+# Get sample counts
+farmobj$data$tax_occ <- calc_n_samples(farmobj, "tax_table", cols = farmobj$data$sample_data$sample_id)
+# Plot results
+set.seed(666)
+heat_tree(farmobj,
+          node_size = n_obs,
+          node_color = farmobj$data$tax_occ$n_samples,
+          node_label = taxon_names,
+          node_size_axis_label = "Number of OTUs",
+          node_color_axis_label = "Number of samples",
+          #node_color_interval = c(1, 11),
+          layout = "davidson-harel",
+          initial_layout = "reingold-tilford")
+```
+
+```{r eval=FALSE}
+exclusive_farm_ref_tax_rel <- subsetByPrevalent(exclusive_farm_ref_tax_rel, rank = "species", assay.type = "relabundance", prevalence = 0, detection = 0.01)
+# 5 species with rel. abundance >= 0.01
+```
+
+##### Exclusive steiner
+
+```{r eval=FALSE}
+### subset steiner
+exclusive_steiner_tax_rel <- species[exclusive_steiner_tax, ]
+exclusive_steiner_tax_rel <- exclusive_steiner_tax_rel[ , exclusive_steiner_tax_rel$group_new %in% c("Steiner")]
+```
+
+```{r eval=FALSE}
+# Convert to phyloseq
+farmps <- convertToPhyloseq(exclusive_steiner_tax_rel, assay.type = "scale_norm")
+# Convert to taxmap
+farmobj <- parse_phyloseq(farmps)
+# Subset to class
+farmobj <- filter_taxa(farmobj, taxon_ranks == "class", supertaxa = TRUE)
+# Get per-taxon counts
+farmobj$data$tax_table <- calc_taxon_abund(farmobj, data = "otu_table", cols = farmobj$data$sample_data$sample_id)
+# Get sample counts
+farmobj$data$tax_occ <- calc_n_samples(farmobj, "tax_table", cols = farmobj$data$sample_data$sample_id)
+# Plot results
+set.seed(666)
+heat_tree(farmobj,
+          node_size = n_obs,
+          node_color = farmobj$data$tax_occ$n_samples,
+          node_label = taxon_names,
+          node_size_axis_label = "Number of OTUs",
+          node_color_axis_label = "Number of samples",
+          node_color_interval = c(1, 19),
+          layout = "davidson-harel",
+          initial_layout = "reingold-tilford")
+```
+
+```{r eval=FALSE}
+exclusive_steiner_tax_rel <- subsetByPrevalent(exclusive_steiner_tax_rel, rank = "species", assay.type = "relabundance", prevalence = 0, detection = 0.01)
+# 7 species with rel. abundance >= 0.01
+```
+
+##### Exclusive steiner ref
+
+```{r eval=FALSE}
+### Subset steiner ref
+exclusive_steiner_ref_tax_rel <- species[exclusive_steiner_ref_tax, ]
+exclusive_steiner_ref_tax_rel <- exclusive_steiner_ref_tax_rel[ , exclusive_steiner_ref_tax_rel$group_new %in% c("Steiner_ref")]
+```
+
+```{r eval=FALSE}
+# Convert to phyloseq
+farmps <- convertToPhyloseq(exclusive_steiner_ref_tax_rel, assay.type = "scale_norm")
+# Convert to taxmap
+farmobj <- parse_phyloseq(farmps)
+# Subset to class
+farmobj <- filter_taxa(farmobj, taxon_ranks == "class", supertaxa = TRUE)
+# Get per-taxon counts
+farmobj$data$tax_table <- calc_taxon_abund(farmobj, data = "otu_table", cols = farmobj$data$sample_data$sample_id)
+# Get sample counts
+farmobj$data$tax_occ <- calc_n_samples(farmobj, "tax_table", cols = farmobj$data$sample_data$sample_id)
+# Plot results
+set.seed(666)
+heat_tree(farmobj,
+          node_size = n_obs,
+          node_color = farmobj$data$tax_occ$n_samples,
+          node_label = taxon_names,
+          node_size_axis_label = "Number of OTUs",
+          node_color_axis_label = "Number of samples",
+          node_color_interval = c(1, 7),
+          layout = "davidson-harel",
+          initial_layout = "reingold-tilford")
+```
+
+```{r eval=FALSE}
+exclusive_steiner_ref_tax_rel <- subsetByPrevalent(exclusive_steiner_ref_tax_rel, rank = "species", assay.type = "relabundance", prevalence = 0, detection = 0.01)
+# 0 species with rel. abundance >= 0.01
+```
+
+#### ARGs
+
+Data preparation
+
+```{r eval=FALSE}
+exclusive_farm_ARG <- base::readRDS("exclusive_farm_ARG.RData")
+exclusive_farm_ref_ARG <- base::readRDS("exclusive_farm_ref_ARG.RData")
+exclusive_steiner_ARG <- base::readRDS("exclusive_steiner_ARG.RData")
+exclusive_steiner_ref_ARG <- base::readRDS("exclusive_steiner_ref_ARG.RData")
+```
+
+```{r eval=FALSE}
+combined_ARG <- c(exclusive_farm_ARG, exclusive_farm_ref_ARG, exclusive_steiner_ARG, exclusive_steiner_ref_ARG)
+exclusive_ARG <- ARG[combined_ARG, ]
+colData(exclusive_ARG)$group_new <- factor(colData(exclusive_ARG)$group_new, 
+    levels = c("Farm", "Farm_ref", "Steiner", "Steiner_ref"),
+    labels = c("Farm", "Farm ref", "Steiner", "Steiner ref"))
+x <- convertToPhyloseq(exclusive_ARG, assay.type = "group")
+df <- psmelt(x)
+df$group_new <- droplevels(df$group_new)
+levels(factor(df$Class))
+df <- df %>%
+  group_by(group_new, Sample, Class) %>%
+  dplyr::summarize(Abundance = sum(Abundance), .groups = "drop") %>%
+  group_by(group_new, Class) %>%
+  dplyr::summarize(Abundance = sum(Abundance), .groups = "drop") %>%
+  ungroup()
+# Exclusive ARGs table
+#df <- df %>%
+#  group_by(group_new, Class, OTU) %>%
+#  dplyr::summarize(Abundance = sum(Abundance), .groups = "drop") %>%
+#  group_by(group_new, Class, OTU) %>%
+#  dplyr::summarize(Abundance = sum(Abundance), .groups = "drop") %>%
+#  ungroup() %>%
+#  filter(Abundance > 0)
+ggplot(data = df, aes(x = group_new, y = Abundance, fill = Class)) +
+  geom_bar(stat = "identity") +
+  labs(x = NULL, y = "Absolute abundance (group-size normalized counts)") + 
+  theme_classic() + 
+  scale_fill_manual(name = "Resistance class", values = met.brewer("Hiroshige", n = 14)) +  
+  theme(axis.text = element_text(color = "black"),
+        axis.ticks = element_line(color = "black"))
+```
+
+# Abundance plots
+
+```{r eval=FALSE}
+species <- agglomerateByVariable(species, assay.type = "scale_norm", rank = "family", by = "cols", group = "group_new")
+species <- transformAssay(species, assay.type = "scale_norm", rank = "family", method = "relabundance")
+plotAbundance(species, assay.type = "relabundance", rank = "phylum", add.legend = FALSE)
+```
+
+## Taxa
+
+```{r eval=FALSE}
+### Family
+tse_F <- species
+# Relevel
+colData(tse_F)$group_new <- factor(colData(tse_F)$group_new, 
+    levels = c("Farm", "Farm_ref", "Steiner", "Steiner_ref"),
+    labels = c("Farm", "Farm ref", "Steiner", "Steiner ref"))
+merged_tse <- agglomerateByRank(tse_F, rank = "family", onRankOnly = TRUE)
+merged_tse <- transformAssay(merged_tse, assay.type = "scale_norm", method = "relabundance")
+top_taxa <- getTop(merged_tse, top = 8, assay.type = "relabundance")
+class_renamed <- lapply(rowData(merged_tse)$family,
+                   function(x){if (x %in% top_taxa) {x} else {"Other"}})
+rowData(merged_tse)$family <- as.character(class_renamed)
+physeq <- convertToPhyloseq(merged_tse, assay.type = "relabundance")
+df <- psmelt(physeq)
+df$Abundance <- df$Abundance * 100
+levels(factor(df$family))
+df$Family <- factor(df$family, levels = c("Bacteroidaceae", "Bifidobacteriaceae", "Clostridiaceae", "Coriobacteriaceae", "Lachnospiraceae", "Oscillospiraceae", "Rikenellaceae", "Ruminococcaceae", "Other"))
+df <- df %>%
+  group_by(group_new, Sample, Family) %>%
+  dplyr::summarize(Abundance = sum(Abundance), .groups = "drop") %>%
+  group_by(group_new, Family) %>%
+  dplyr::summarize(Abundance = mean(Abundance), .groups = "drop") %>% 
+  ungroup()
+B <- ggplot(data = df, aes(x = group_new, y = Abundance, fill = Family)) +
+  geom_bar(stat = "identity") +
+  labs(x = NULL, y = "Mean rel. abundance (%)") + 
+  theme_classic() + 
+  scale_fill_okabe_ito() +
+  scale_color_okabe_ito() +
+  theme(axis.text = element_text(color = "black"),
+        axis.ticks = element_line(color = "black"))
+### Class
+tse_C <- species
+# Relevel
+colData(tse_C)$group_new <- factor(colData(tse_C)$group_new, 
+    levels = c("Farm", "Farm_ref", "Steiner", "Steiner_ref"),
+    labels = c("Farm", "Farm ref", "Steiner", "Steiner ref"))
+merged_tse <- agglomerateByRank(tse_C, rank = "class", onRankOnly = TRUE)
+merged_tse <- transformAssay(merged_tse, assay.type = "scale_norm", method = "relabundance")
+top_taxa <- getTop(merged_tse, top = 8, assay.type = "relabundance")
+class_renamed <- lapply(rowData(merged_tse)$class,
+                   function(x){if (x %in% top_taxa) {x} else {"Other"}})
+rowData(merged_tse)$class <- as.character(class_renamed)
+physeq <- convertToPhyloseq(merged_tse, assay.type = "relabundance")
+df <- psmelt(physeq)
+df$Abundance <- df$Abundance * 100
+levels(factor(df$class))
+df$Class <- factor(df$class, levels = c("Actinomycetia", "Bacilli", "Bacteroidia", "Clostridia", "Coriobacteriia", "Erysipelotrichia", "Negativicutes", "Verrucomicrobiae", "Other"))
+df <- df %>%
+  group_by(group_new, Sample, Class) %>%
+  dplyr::summarize(Abundance = sum(Abundance), .groups = "drop") %>%
+  group_by(group_new, Class) %>%
+  dplyr::summarize(Abundance = mean(Abundance), .groups = "drop") %>%
+  ungroup()
+A <- ggplot(data = df) +
+  geom_bar(aes(x = group_new, y = Abundance, fill = Class), stat = "identity", position = "stack") +
+  labs(x = NULL, y = "Mean rel. abundance (%)") +
+  theme_classic() + 
+  scale_fill_okabe_ito() +
+  scale_color_okabe_ito() +
+  theme(axis.text = element_text(color = "black"),
+        axis.ticks = element_line(color = "black"))
+```
+
+## ARGs
+
+```{r eval=FALSE}
+### Family
+ARG_C <- ARG
+# Relevel
+colData(ARG_C)$group_new <- factor(colData(ARG_C)$group_new, 
+    levels = c("Farm", "Farm_ref", "Steiner", "Steiner_ref"),
+    labels = c("Farm", "Farm ref", "Steiner", "Steiner ref"))
+# Getting top ARGs on a class level
+merged_ARGs <- agglomerateByRank(ARG_C, rank = "Class", assay.type = "scale_norm")
+merged_ARGs <- transformAssay(merged_ARGs, assay.type = "scale_norm", method = "relabundance")
+top_ARGs <- getTop(merged_ARGs, top = 5, assay.type = "relabundance")
+# Renaming the "Class" rank to keep only top ARGs and the rest to "Other"
+renamed_class <- lapply(rowData(merged_ARGs)$Class,
+                   function(x){if (x %in% top_ARGs) {x} else {"Other"}}) 
+rowData(merged_ARGs)$Class <- as.character(renamed_class)
+merged_ARGs <- convertToPhyloseq(merged_ARGs, assay.type = "relabundance")
+df <- psmelt(merged_ARGs)
+df$Abundance <- df$Abundance * 100
+levels(factor(df$Class))
+df$Class <- factor(df$Class, levels = c("Aminoglycoside", "Amphenicol", "Beta-lactam", "Macrolide, Lincosamide, Streptogramin B", "Tetracycline", "Other"))
+levels(df$Class)[levels(df$Class) == "Macrolide, Lincosamide, Streptogramin B"] <- "MLS"
+df <- df %>%
+  group_by(group_new, Sample, Class) %>%
+  dplyr::summarize(Abundance = sum(Abundance), .groups = "drop") %>%
+  group_by(group_new, Class) %>%
+  dplyr::summarize(Abundance = mean(Abundance), .groups = "drop") %>%
+  ungroup()
+C <- ggplot(data = df, aes(x = group_new, y = Abundance, fill = Class)) +
+  geom_bar(stat = "identity") +
+  labs(x = NULL, y = "Mean rel. abundance (%)") + 
+  theme_classic() + 
+  scale_fill_okabe_ito(name = "Resistance class", order = c(1, 2, 3, 4, 5, 9)) + 
+  scale_color_okabe_ito(order = c(1, 2, 3, 4, 5, 9)) +
+  theme(axis.text = element_text(color = "black"),
+        axis.ticks = element_line(color = "black"))
+```
+
+```{r eval=FALSE}
+plot_grid(A, B, C, align = "hv")
+```
+
+# Taxonomic tree
+
+```{r eval=FALSE}
+# Subset based on groups
+tax_steiner <- species[ , species$group_new %in% c("Steiner", "Steiner_ref")]
+# Identify taxa with 0 counts in all samples
+zero_counts <- rowSums(assay(tax_steiner) == 0) == ncol(assay(tax_steiner))
+# Subset to exclude rows with zero counts in all samples
+tax_steiner <- tax_steiner[!zero_counts, ]
+# Set correct reference group
+tax_steiner$group_new <- relevel(tax_steiner$group_new, ref = "Steiner_ref")
+tax_steiner$group_new <- droplevels(tax_steiner$group_new)
+# Convert to phyloseq
+steinerps <- convertToPhyloseq(tax_steiner[rowData(tax_steiner)$kingdom == "Bacteria"], assay.type = "scale_norm")
+### Prepare TSE for farm and farm references
+# Subset based on groups
+tax_farm <- species[ , species$group_new %in% c("Farm", "Farm_ref")]
+# Identify taxa with 0 counts in all samples
+zero_counts <- rowSums(assay(tax_farm) == 0) == ncol(assay(tax_farm))
+# Subset to exclude rows with zero counts in all samples
+tax_farm <- tax_farm[!zero_counts, ]
+# Set correct reference group
+tax_farm$group_new <- relevel(tax_farm$group_new, ref = "Farm_ref")
+tax_farm$group_new <- droplevels(tax_farm$group_new)
+# Convert to phyloseq
+farmps <- convertToPhyloseq(tax_farm[rowData(tax_farm)$kingdom == "Bacteria"], assay.type = "scale_norm")
+# Convert to taxmap
+steinerobj <- parse_phyloseq(steinerps)
+farmobj <- parse_phyloseq(farmps)
+### Steiner
+# Subset to class
+steinerobj <- filter_taxa(steinerobj, taxon_ranks == "class", supertaxa = TRUE) 
+# Get per-taxon counts
+steinerobj$data$tax_table <- calc_taxon_abund(steinerobj, data = "otu_table", cols = steinerobj$data$sample_data$sample_id)
+# Calculate rel. abundance
+steinerobj$data$tax_table <- calc_obs_props(steinerobj, "tax_table")
+# Calculate differences
+steinerobj$data$diff_table <- compare_groups(steinerobj, data = "tax_table", cols = steinerobj$data$sample_data$sample_id, groups =  steinerobj$data$sample_data$group_new)
+steinerobj$data$diff_table$wilcox_p_value <- p.adjust(steinerobj$data$diff_table$wilcox_p_value,method = "BH")
+# Plot results
+set.seed(666)
+heat_tree_matrix(steinerobj,
+                 data = "diff_table",
+                 node_size = n_obs,
+                 node_color = median_diff,
+                 node_label = taxon_names,
+                 node_color_range = diverging_palette(),
+                 node_color_trans = "linear",
+                 node_color_interval = c(-0.03, 0.03), 
+                 edge_color_interval = c(-0.03, 0.03), 
+                 node_size_axis_label = "Number of OTUs",
+                 node_color_axis_label = "median difference rel. abundance",
+                 layout = "davidson-harel",
+                 initial_layout = "reingold-tilford")
+### Farm
+# subset to class
+farmobj <- filter_taxa(farmobj, taxon_ranks == "class", supertaxa = TRUE) 
+# Get per-taxon counts
+farmobj$data$tax_table <- calc_taxon_abund(farmobj, data = "otu_table", cols = farmobj$data$sample_data$sample_id)
+# Calculate rel. abundance
+farmobj$data$tax_table <- calc_obs_props(farmobj, "tax_table")
+# Calculate differences
+farmobj$data$diff_table <- compare_groups(farmobj, data = "tax_table", cols = farmobj$data$sample_data$sample_id, groups =  farmobj$data$sample_data$group_new, combinations = list(c("Farm", "Farm_ref")))
+farmobj$data$diff_table$wilcox_p_value <- p.adjust(farmobj$data$diff_table$wilcox_p_value, method = "BH")
+# Plot results
+set.seed(666)
+heat_tree_matrix(farmobj,
+                 data = "diff_table",
+                 node_size = n_obs,
+                 node_color = median_diff,
+                 node_label = taxon_names,
+                 node_color_range = diverging_palette(),
+                 node_color_trans = "linear", 
+                 node_color_interval = c(-0.03, 0.03), 
+                 edge_color_interval = c(-0.03, 0.03),
+                 node_size_axis_label = "Number of OTUs",
+                 node_color_axis_label = "median difference rel. abundance",
+                 layout = "davidson-harel",
+                 initial_layout = "reingold-tilford")
+```
+
+# Correlation
+
+## Taxa
+
+```{r eval=FALSE}
+# Add ARG load and diversity to colData
+colData(species)$Shannon <- richness_shannon$Shannon
+colData(species)$Simpson <- richness_InvSimpson$InvSimpson
+colData(species)$Chao1 <- richness_Chao1$Chao1
+colData(species)$ARG_load <- ARG$SUM_norm
+altExp(species, "ClassPrevalent") <- agglomerateByPrevalence(species, rank = "class", assay.type = "scale_norm", prevalence = 0.5)
+Classprev <- altExp(species, "ClassPrevalent")
+# CLR transformation, pseudocount of 1.5 was applied by mia function
+Classprev <- transformAssay(Classprev, assay.type = "scale_norm", method = "clr", name = "clr", pseudocount = TRUE)
+res <- getCrossAssociation(Classprev, Classprev, assay.type1 = "clr", col.var2 = c("Shannon", "Simpson", "Chao1", "ARG_load"), by = "rows", method = "kendall", mode = "matrix", p.adj.method = "BH", test.signif = TRUE)
+# Function for marking significant correlations with "X"
+add_signif <- function(j, i, x, y, width, height, fill) {
+    # If the p-value is under threshold
+    if( !is.na(res$p_adj[i, j]) & res$p_adj[i, j] < 0.05 ){
+        # Print "x"
+        grid.shadowtext(
+            sprintf("%s", "x"), x, y, gp = gpar(fontsize = 10, col = "white"))
+    }
+}
+custom_column_labels <- c("Shannon", "Simpson", "Chao1", "ARG load")
+# Create a heatmap
+Heat_tax <- Heatmap(res$cor,
+    # Print values to cells
+    cell_fun = add_signif,
+    heatmap_legend_param = list(
+        title = "Kendall's τ", legend_height = unit(8, "cm"),
+        title_gp = gpar(fontsize = 14, fontface = "bold"),
+        title_position = "topcenter"),
+    column_names_rot = 45,
+    column_labels = custom_column_labels,
+    column_names_gp = gpar(fontface = "bold"),
+    row_names_gp = gpar(fontface = "italic"),
+    )
+```
+
+```{r eval=FALSE}
+draw(Heat_tax, padding = unit(c(0, 0.5, 0.5, 2), "cm")) 
+```
+
+## ARGs
+
+```{r eval=FALSE}
+# Add ARG load and diversity to colData
+colData(ARG)$Shannon <- richness_shannon$Shannon
+colData(ARG)$Simpson <- richness_InvSimpson$InvSimpson
+colData(ARG)$Chao1 <- richness_Chao1$Chao1
+colData(ARG)$ARG_load <- ARG$SUM_norm
+altExp(ARG, "ClassPrevalent") <- agglomerateByPrevalence(ARG, rank = "Class", assay.type = "scale_norm", prevalence = 0.5) # 
+rownames(altExp(ARG, "ClassPrevalent"))[7] <- "MATQAR"
+rownames(altExp(ARG, "ClassPrevalent"))[8] <- "MLS"
+Classprev <- altExp(ARG, "ClassPrevalent")
+# CLR transformation, pseudocount of 0.5 was applied by mia function
+Classprev <- transformAssay(Classprev, assay.type = "scale_norm", method = "clr", name = "clr", pseudocount = TRUE)
+res <- getCrossAssociation(Classprev, Classprev, assay.type1 = "clr", col.var2 = c("Shannon", "Simpson", "Chao1", "ARG_load"), by = "rows", method = "kendall", mode = "matrix", p.adj.method = "BH", test.signif = TRUE)
+# Function for marking significant correlations with "X"
+add_signif <- function(j, i, x, y, width, height, fill) {
+    # If the p-value is under threshold
+    if( !is.na(res$p_adj[i, j]) & res$p_adj[i, j] < 0.05 ){
+        # Print "x"
+        grid.shadowtext(
+            sprintf("%s", "x"), x, y, gp = gpar(fontsize = 10, col = "white"))
+    }
+}
+custom_column_labels <- c("Shannon", "Simpson", "Chao1", "ARG load")
+# Create a heatmap
+p <- Heatmap(res$cor,
+    # Print values to cells
+    cell_fun = add_signif,
+    heatmap_legend_param = list(
+        title = "Kendall's τ", legend_height = unit(8, "cm"),
+        title_gp = gpar(fontsize = 14, fontface = "bold"),
+        title_position = "topcenter"),
+    column_names_rot = 45,
+    column_labels = custom_column_labels,
+    column_names_gp = gpar(fontface = "bold"),
+    row_names_gp = gpar(fontface = "italic"),
+    )
+```
+
+```{r eval=FALSE}
+draw(p, padding = unit(c(0, 0.5, 0.5, 2), "cm")) 
+```
