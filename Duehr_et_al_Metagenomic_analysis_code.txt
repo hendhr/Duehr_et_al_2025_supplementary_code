@@ -1,0 +1,22 @@
+Program versions:
+"bowtie2/2.4.4",
+        "samtools/1.16.1"
+"metaphlan/4.0.3"
+ 
+# Map to Resfinder database
+"bowtie2 -x {params.ref} -1 {input.R1} -2 {input.R2} \
+        -D 20 -R 3 -N 1 -L 20 -i S,1,0.50 \
+        --threads {threads} | samtools view -Sb - > {output}"
+ 
+# Filter with samtools
+samtools view -h {input} | awk '$7!="=" || ($7=="=" && and($2,0x40)) {{print $0}}' | samtools view -Su - | samtools sort -o {output}
+        samtools index {output}
+ 
+# Take correct column for counts
+echo -e {wildcards.sample} > {output}
+        samtools idxstats {input} | grep -v "*" | cut -f3 >> {output}
+ 
+# Run metaphlan
+metaphlan {input} --bowtie2out {output.bt} --input_type fastq -o {output.taxa} \
+         --bowtie2db /scratch/project_2005073/USER_WORKSPACES/parnanen/PARSIFAL/workflow/metaphlan_databases \
+        -t rel_ab_w_read_stats --nproc 24
