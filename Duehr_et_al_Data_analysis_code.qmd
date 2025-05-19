@@ -23,7 +23,7 @@ editor_options:
 
 ## Installation
 
-```{r eval=FALSE}
+```{r}
 ### Install mia from GitHub to have current fixes
 install.packages("remotes")
 library(remotes)
@@ -139,7 +139,7 @@ sessionInfo()
 
 ## Cohort data
 
-```{r eval=FALSE}
+```{r}
 cohort <- read.csv("Data/PARSIFAL_cohort_data_12222023.csv")
 # Shorten the Subject IDs, so they match the IDs in the TSE
 cohort$Subject_ID <- gsub("27006s1", "", cohort$Subject_ID)
@@ -155,7 +155,7 @@ cohort <- DataFrame(cohort)
 
 ## MetaPhlAn data
 
-```{r eval=FALSE}
+```{r}
 # TreeSummarizedExperiment format
 metaphlan <- importMetaPhlAn("Data/MetaPhlAn_PARSIFAL_01232024.tsv", prefix.rm = TRUE)
 # Rename assay accordingly
@@ -177,7 +177,7 @@ colData(species) <- colData(species)[, -which(colnames(colData(species)) %in% c(
 
 ### Load files, preparations
 
-```{r eval=FALSE}
+```{r}
 # Load in gene counts
 ARG_counts <- read_table("Data/ARG_PARSIFAL_01232024.txt", col_names = TRUE) %>% data.frame()
 # Add Seq_ identifier for individual ARGs to gene counts 
@@ -204,7 +204,7 @@ rownames(tmp2) <- tmp2$Seq_id
 
 ### Normalize by gene lengths
 
-```{r eval=FALSE}
+```{r}
 df <- ARG_counts
 df$Gene_length <- ARG_gene_lengths$X2
 # Remove extra columns
@@ -216,7 +216,7 @@ rownames(ARG_counts_length_norm) <- ARG_counts$Seq_id
 
 ### Final ARG data object
 
-```{r eval=FALSE}
+```{r}
 ### Load in library size
 libsize <- read.table("Data/lib_sizes_with_filenames_01232024.txt", row.names = 2)
 libsize$File_name <- rownames(libsize)
@@ -250,7 +250,7 @@ colData(ARG) <- colData(ARG)[, -which(colnames(colData(ARG)) %in% c("Subject_ID"
 
 ## MetaPhlAn data
 
-```{r eval=FALSE}
+```{r}
 # Contains relative abundances of species
 df_relab <- as.data.frame(assay(species))
 # Column V1 contains library sizes
@@ -303,7 +303,7 @@ colData(species)$group_new <- factor(colData(species)$group_new,
 
 ## ARG data
 
-```{r eval=FALSE}
+```{r}
 # assay(ARG_final) contains (counts/gene length) ARGs
 df_ARG <- as.data.frame(assay(ARG))
 # Column V1 contains library sizes
@@ -359,7 +359,7 @@ colData(ARG)$group_new <- factor(colData(ARG)$group_new,
 
 ### Preparation
 
-```{r eval=FALSE}
+```{r}
 ### Prepare TSE for Steiner and Steiner references
 # Subset based on groups
 tax_steiner <- species[ , species$group_new %in% c("Steiner", "Steiner_ref")]
@@ -384,7 +384,7 @@ tax_farm$group_new <- relevel(tax_farm$group_new, ref = "Farm_ref")
 tax_farm <- subsetByPrevalent(tax_farm, rank = "species", assay.type = "scale_norm", as_relative = FALSE, detection = 1, prevalence = 0.1)
 ```
 
-```{r eval=FALSE}
+```{r}
 ### Create df for analysis
 tax_steiner_df <- as.data.frame(t(assay(tax_steiner, "scale_norm")))
 tax_steiner_meta_df <- as.data.frame(colData(tax_steiner))
@@ -396,7 +396,7 @@ tax_farm_meta_df <- as.data.frame(colData(tax_farm))
 
 ##### Steiner
 
-```{r eval=FALSE}
+```{r}
 MaAsLin2_tax_steiner <- Maaslin2(
     tax_steiner_df, tax_steiner_meta_df, 'MaAsLin2_tax_steiner',
     min_abundance = 0,
@@ -413,14 +413,14 @@ MaAsLin2_tax_steiner <- Maaslin2(
     reference = "group_new,Steiner_ref")
 ```
 
-```{r eval=FALSE}
+```{r}
 M2tsr <- as.data.frame(MaAsLin2_tax_steiner$results)
 M2tsr %>% dplyr::filter(qval <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
 ```
 
 ##### Farm
 
-```{r eval=FALSE}
+```{r}
 MaAsLin2_tax_farm <- Maaslin2(
     tax_farm_df, tax_farm_meta_df, 'MaAsLin2_tax_farm',
     min_abundance = 0,
@@ -437,7 +437,7 @@ MaAsLin2_tax_farm <- Maaslin2(
     reference = "group_new,Farm_ref")
 ```
 
-```{r eval=FALSE}
+```{r}
 M2tfr <- as.data.frame(MaAsLin2_tax_farm$results)
 M2tfr %>% dplyr::filter(qval <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
 ```
@@ -446,7 +446,7 @@ M2tfr %>% dplyr::filter(qval <= 0.05) %>% knitr::kable() %>% kableExtra::kable_s
 
 ##### Steiner
 
-```{r eval=FALSE}
+```{r}
 # TSS normalization
 tax_steiner_df <- as.data.frame(t(t(tax_steiner_df)/colSums(t(tax_steiner_df))))
 # Add metadata
@@ -472,13 +472,13 @@ wilcox_tax_steiner <- data.frame(taxa =  names(wilcox_tax_steiner),
 wilcox_tax_steiner$p_adjusted <- p.adjust(wilcox_tax_steiner$p_raw, method = "BH")
 ```
 
-```{r eval=FALSE}
+```{r}
 wilcox_tax_steiner %>% dplyr::filter(p_adjusted <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
 ```
 
 ##### Farm
 
-```{r eval=FALSE}
+```{r}
 # TSS normalization
 tax_farm_df <- as.data.frame(t(t(tax_farm_df)/colSums(t(tax_farm_df))))
 # Add metadata
@@ -504,7 +504,7 @@ wilcox_tax_farm <- data.frame(taxa =  names(wilcox_tax_farm),
 wilcox_tax_farm$p_adjusted <- p.adjust(wilcox_tax_farm$p_raw, method = "BH")
 ```
 
-```{r eval=FALSE}
+```{r}
 wilcox_tax_farm %>% dplyr::filter(p_adjusted <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
 ```
 
@@ -512,7 +512,7 @@ wilcox_tax_farm %>% dplyr::filter(p_adjusted <= 0.05) %>% knitr::kable() %>% kab
 
 ### Preparation
 
-```{r eval=FALSE}
+```{r}
 ### Prepare TSE for Steiner and Steiner references
 # Subset based on groups
 ARG_steiner <- ARG[ , ARG$group_new %in% c("Steiner", "Steiner_ref")]
@@ -533,7 +533,7 @@ ARG_farm <- ARG_farm[!zero_counts, ]
 ARG_farm$group_new <- relevel(ARG_farm$group_new, ref = "Farm_ref")
 ```
 
-```{r eval=FALSE}
+```{r}
 ### Create df for analysis
 ARG_steiner_df <- as.data.frame(t(assay(ARG_steiner, "scale_norm")))
 ARG_steiner_meta_df <- as.data.frame(colData(ARG_steiner))
@@ -545,7 +545,7 @@ ARG_farm_meta_df <- as.data.frame(colData(ARG_farm))
 
 ##### Steiner
 
-```{r eval=FALSE}
+```{r}
 MaAsLin2_ARG_steiner <- Maaslin2(
     ARG_steiner_df, ARG_steiner_meta_df, 'MaAsLin2_ARG_steiner',
     min_abundance = 0,
@@ -562,14 +562,14 @@ MaAsLin2_ARG_steiner <- Maaslin2(
     reference = "group_new,Steiner_ref")
 ```
 
-```{r eval=FALSE}
+```{r}
 M2asr <- as.data.frame(MaAsLin2_ARG_steiner$results)
 M2asr %>% dplyr::filter(qval <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
 ```
 
 ##### Farm
 
-```{r eval=FALSE}
+```{r}
 MaAsLin2_ARG_farm <- Maaslin2(
     ARG_farm_df, ARG_farm_meta_df, 'MaAsLin2_ARG_farm',
     min_abundance = 0,
@@ -586,7 +586,7 @@ MaAsLin2_ARG_farm <- Maaslin2(
     reference = "group_new,Farm_ref")
 ```
 
-```{r eval=FALSE}
+```{r}
 M2afr <- as.data.frame(MaAsLin2_ARG_farm$results)
 M2afr %>% dplyr::filter(qval <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
 ```
@@ -595,7 +595,7 @@ M2afr %>% dplyr::filter(qval <= 0.05) %>% knitr::kable() %>% kableExtra::kable_s
 
 ##### Steiner
 
-```{r eval=FALSE}
+```{r}
 ARG_steiner_df <- as.data.frame(t(t(ARG_steiner_df)/colSums(t(ARG_steiner_df))))
 wil_ARG_steiner <- base::cbind(
   ARG_steiner_df, 
@@ -615,13 +615,13 @@ wilcox_ARG_steiner <- data.frame(taxa =  names(wilcox_ARG_steiner),
 wilcox_ARG_steiner$p_adjusted <- p.adjust(wilcox_ARG_steiner$p_raw, method = "BH")
 ```
 
-```{r eval=FALSE}
+```{r}
 wilcox_ARG_steiner %>% dplyr::filter(p_adjusted <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
 ```
 
 ##### Farm
 
-```{r eval=FALSE}
+```{r}
 ARG_farm_df <- as.data.frame(t(t(ARG_farm_df)/colSums(t(ARG_farm_df))))
 wil_ARG_farm <- base::cbind(
   ARG_farm_df, 
@@ -641,7 +641,7 @@ wilcox_ARG_farm <- data.frame(taxa =  names(wilcox_ARG_farm),
 wilcox_ARG_farm$p_adjusted <- p.adjust(wilcox_ARG_farm$p_raw, method = "BH")
 ```
 
-```{r eval=FALSE}
+```{r}
 wilcox_ARG_farm %>% dplyr::filter(p_adjusted <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
 ```
 
@@ -649,7 +649,7 @@ wilcox_ARG_farm %>% dplyr::filter(p_adjusted <= 0.05) %>% knitr::kable() %>% kab
 
 ##### Steiner
 
-```{r eval=FALSE}
+```{r}
 ARG_steiner_ds2 <- TreeSummarizedExperiment(
   assay = assay(ARG_steiner, "scale_norm"),
   colData = colData(ARG_steiner),
@@ -669,13 +669,13 @@ df <- as.data.frame(res)
 df <- df %>% arrange(padj)
 ```
 
-```{r eval=FALSE}
+```{r}
 df %>% dplyr::filter(padj <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
 ```
 
 ##### Farm
 
-```{r eval=FALSE}
+```{r}
 ARG_farm_ds2 <- TreeSummarizedExperiment(
   assay = assay(ARG_farm, "scale_norm"),
   colData = colData(ARG_farm),
@@ -695,13 +695,13 @@ df <- as.data.frame(res)
 df <- df %>% arrange(padj)
 ```
 
-```{r eval=FALSE}
+```{r}
 df %>% dplyr::filter(padj <= 0.05) %>% knitr::kable() %>% kableExtra::kable_styling("striped") %>% kableExtra::scroll_box(width = "100%")
 ```
 
 ###### Plot
 
-```{r eval=FALSE}
+```{r}
 df_signif <- df %>% dplyr::filter(padj <= 0.05) 
 df_signif <- rownames_to_column(df_signif, var = "Species")
 merged_df <- merge(df_signif, rowData(ARG_farm), by.x = "Species", by.y = "Gene", all.x = TRUE)
@@ -733,7 +733,7 @@ ggplot(merged_df, aes(x = reorder(Species, -log2FoldChange), y = log2FoldChange,
 
 ## Preparation
 
-```{r eval=FALSE}
+```{r}
 #### Make data frame from colData
 ARG_load <- as.data.frame(colData(ARG))
 # Remove unnecessary variables
@@ -781,7 +781,7 @@ print(combined_plot2)
 
 ### Full model
 
-```{r eval=FALSE}
+```{r}
 # Remove samples with NAs
 ARG_load_clean <- na.omit(ARG_load)
 # Run stewise regression
@@ -801,7 +801,7 @@ summary(glht(glht.bmi)) # *
 
 ## Plot
 
-```{r eval=FALSE}
+```{r}
 ######### Plotting
 plot <- ARG_load_clean
 # Assigning variable names
@@ -851,7 +851,7 @@ c <- ggplot(plot, aes(x = age, y = SUM_norm)) +
   labs(x = "Age (years)", y = "ARG load")
 ```
 
-```{r eval=FALSE}
+```{r}
 plot_grid(a, b, c, ncol = 3)
 ```
 
@@ -861,7 +861,7 @@ plot_grid(a, b, c, ncol = 3)
 
 ### Rarefaction
 
-```{r eval=FALSE}
+```{r}
 phylo <- convertToPhyloseq(species, assay.type = "scale_norm")
 # Define the number of iterations
 num_iterations <- 100
@@ -909,7 +909,7 @@ colnames(richness_Chao1)[2] <- c("SD")
 richness_Chao1$group_new <- colData(species)$group_new
 ```
 
-```{r eval=FALSE}
+```{r}
 ### Testing and plotting
 # Shannon
 df <- richness_shannon
@@ -995,7 +995,7 @@ taxa_chao1 <- ggplot(df, aes(x = group_new, y = Chao1)) +
 
 ## ARGs
 
-```{r eval=FALSE}
+```{r}
 ### Shannon
 Shannon_ARG <- mia::addAlpha(ARG, assay.type = "scale_norm", index = "shannon", name = "shannon")
 df <- as.data.frame(colData(Shannon_ARG))
@@ -1093,7 +1093,7 @@ ARG_chao1 <- ggplot(df, aes(x = group_new, y = chao1)) +
 
 ## Plot
 
-```{r eval=FALSE}
+```{r}
 plot_grid(taxa_shannon, ARG_shannon, taxa_simpson, ARG_simpson, taxa_chao1, ARG_chao1, rows = 3, align = "hv")
 ```
 
@@ -1103,7 +1103,7 @@ plot_grid(taxa_shannon, ARG_shannon, taxa_simpson, ARG_simpson, taxa_chao1, ARG_
 
 ### Rarefaction
 
-```{r eval=FALSE}
+```{r}
 ### Prepare TSE for Steiner and Steiner references
 # Subset based on groups
 tax_steiner <- species[ , species$group_new %in% c("Steiner", "Steiner_ref")]
@@ -1138,7 +1138,7 @@ PCoA_farm <- cmdscale(bray_farm, k = 5, eig = TRUE, add = FALSE, x.ret = FALSE, 
 reducedDims(tax_farm)$PCoA <- PCoA_farm$points
 ```
 
-```{r eval=FALSE}
+```{r}
 ### Steiners and references
 pSteiner <- plotReducedDim(tax_steiner, "PCoA",
                     colour_by = "group_new")
@@ -1175,7 +1175,7 @@ pFarm <- pFarm + labs(x = paste("PCoA 1 (", round(100 * rel_eig_Farm[[1]], 1), "
 
 ## PCoA ARGs
 
-```{r eval=FALSE}
+```{r}
 ### Steiners and references
 set.seed(666)
 tse_ARG_Steiner <- runMDS(ARG_steiner,
@@ -1228,7 +1228,7 @@ p_ARG_Farm <- p_ARG_Farm + labs(x = paste("PCoA 1 (", round(100 * rel_eig_Farm[[
 
 ### Rarefaction
 
-```{r eval=FALSE}
+```{r}
 ### Prepare TSE for Steiner and Steiner references
 # Subset based on groups
 tax_steiner <- species[ , species$group_new %in% c("Steiner", "Steiner_ref")]
@@ -1263,7 +1263,7 @@ PCoA_farm <- cmdscale(jaccard_farm, k = 5, eig = TRUE, add = FALSE, x.ret = FALS
 reducedDims(tax_farm)$PCoA <- PCoA_farm$points
 ```
 
-```{r eval=FALSE}
+```{r}
 ### Steiners and references
 pSteiner_jacc <- plotReducedDim(tax_steiner, "PCoA",
                     colour_by = "group_new")
@@ -1300,7 +1300,7 @@ pFarm_jacc <- pFarm_jacc + labs(x = paste("PCoA 1 (", round(100 * rel_eig_Farm[[
 
 ## PCoA ARGs
 
-```{r eval=FALSE}
+```{r}
 ### Steiners and references
 set.seed(666)
 tse_ARG_Steiner <- runMDS(ARG_steiner,
@@ -1349,7 +1349,7 @@ p_ARG_Farm_jacc <- p_ARG_Farm_jacc + labs(x = paste("PCoA 1 (", round(100 * rel_
 
 ## Plot
 
-```{r eval=FALSE}
+```{r}
 plot_grid(pFarm, p_ARG_Farm, pSteiner, p_ARG_Steiner, pFarm_jacc, p_ARG_Farm_jacc, pSteiner_jacc, p_ARG_Steiner_jacc, nrow = 4, align = "hv")
 ```
 
@@ -1357,7 +1357,7 @@ plot_grid(pFarm, p_ARG_Farm, pSteiner, p_ARG_Steiner, pFarm_jacc, p_ARG_Farm_jac
 
 ## Taxa
 
-```{r eval=FALSE}
+```{r}
 # Define the number of iterations
 num_iterations <- 100
 # Initialize an empty list for storing results
@@ -1397,7 +1397,7 @@ assay_row_names <- rownames(assay(species, "counts"))
 taxvenn_summary <- taxvenn_summary[assay_row_names, ]
 ```
 
-```{r eval=FALSE}
+```{r}
 assay(species, "venn") <- as.matrix(taxvenn_summary)
 # Subset the TSE according to lifestyle groups
 a <- species[ , species$group_new %in% c("Farm")]
@@ -1511,7 +1511,7 @@ venn_tax <- ggplot(merged, aes(A = `Farm ref`, B = `Farm`, C = `Steiner`, D = `S
 
 ## ARGs
 
-```{r eval=FALSE}
+```{r}
 # Define the number of iterations
 num_iterations <- 100
 # Initialize an empty list for storing results
@@ -1551,7 +1551,7 @@ assay_row_names <- rownames(assay(ARG, "counts"))
 argvenn_summary <- argvenn_summary[assay_row_names, ]
 ```
 
-```{r eval=FALSE}
+```{r}
 assay(ARG, "venn") <- as.matrix(argvenn_summary)
 # Subset the TSE according to lifestyle groups
 a <- ARG[ , ARG$group_new %in% c("Farm")]
@@ -1664,7 +1664,7 @@ colnames(merged) <- c("Species", "Farm", "Steiner", "Farm ref", "Steiner ref")
 venn_arg <- ggplot(merged, aes(A = `Farm ref`, B = `Farm`, C = `Steiner`, D = `Steiner ref`)) + geom_venn(set_name_size = 3.75, text_size = 3.75, fill_color = c("#B2DF8A", "#33A02C", "#6A3D9A", "#CAB2D6"), stroke_size = 0.5, show_percentage = FALSE) + theme_void() + coord_fixed() + annotate("text", x = 0, y = 1.5, label = "ARGs", size = 3.75, color = "black", fontface ="bold")
 ```
 
-```{r eval=FALSE}
+```{r}
 plot_grid(venn_tax, venn_arg, align = "hv")
 ```
 
@@ -1674,7 +1674,7 @@ plot_grid(venn_tax, venn_arg, align = "hv")
 
 Data preparation
 
-```{r eval=FALSE}
+```{r}
 exclusive_farm_tax <- base::readRDS("exclusive_farm_tax.RData")
 exclusive_farm_ref_tax <- base::readRDS("exclusive_farm_ref_tax.RData")
 exclusive_steiner_tax <- base::readRDS("exclusive_steiner_tax.RData")
@@ -1685,13 +1685,13 @@ species <- transformAssay(species, assay.type = "scale_norm", method = "relabund
 
 ##### Exclusive farm
 
-```{r eval=FALSE}
+```{r}
 ### Subset farm
 exclusive_farm_tax_rel <- species[exclusive_farm_tax, ]
 exclusive_farm_tax_rel <- exclusive_farm_tax_rel[ , exclusive_farm_tax_rel$group_new %in% c("Farm")]
 ```
 
-```{r eval=FALSE}
+```{r}
 # Convert to phyloseq
 farmps <- convertToPhyloseq(exclusive_farm_tax_rel, assay.type = "scale_norm")
 # Convert to taxmap
@@ -1715,20 +1715,20 @@ heat_tree(farmobj,
           initial_layout = "reingold-tilford")
 ```
 
-```{r eval=FALSE}
+```{r}
 exclusive_farm_tax_rel <- subsetByPrevalent(exclusive_farm_tax_rel, rank = "species", assay.type = "relabundance", prevalence = 0, detection = 0.01)
 # 18 species with rel. abundance >= 0.01
 ```
 
 ##### Exclusive farm ref
 
-```{r eval=FALSE}
+```{r}
 ### subset farm ref
 exclusive_farm_ref_tax_rel <- species[exclusive_farm_ref_tax, ]
 exclusive_farm_ref_tax_rel <- exclusive_farm_ref_tax_rel[ , exclusive_farm_ref_tax_rel$group_new %in% c("Farm_ref")]
 ```
 
-```{r eval=FALSE}
+```{r}
 # Convert to phyloseq
 farmps <- convertToPhyloseq(exclusive_farm_ref_tax_rel, assay.type = "scale_norm")
 # Convert to taxmap
@@ -1752,20 +1752,20 @@ heat_tree(farmobj,
           initial_layout = "reingold-tilford")
 ```
 
-```{r eval=FALSE}
+```{r}
 exclusive_farm_ref_tax_rel <- subsetByPrevalent(exclusive_farm_ref_tax_rel, rank = "species", assay.type = "relabundance", prevalence = 0, detection = 0.01)
 # 5 species with rel. abundance >= 0.01
 ```
 
 ##### Exclusive steiner
 
-```{r eval=FALSE}
+```{r}
 ### subset steiner
 exclusive_steiner_tax_rel <- species[exclusive_steiner_tax, ]
 exclusive_steiner_tax_rel <- exclusive_steiner_tax_rel[ , exclusive_steiner_tax_rel$group_new %in% c("Steiner")]
 ```
 
-```{r eval=FALSE}
+```{r}
 # Convert to phyloseq
 farmps <- convertToPhyloseq(exclusive_steiner_tax_rel, assay.type = "scale_norm")
 # Convert to taxmap
@@ -1789,20 +1789,20 @@ heat_tree(farmobj,
           initial_layout = "reingold-tilford")
 ```
 
-```{r eval=FALSE}
+```{r}
 exclusive_steiner_tax_rel <- subsetByPrevalent(exclusive_steiner_tax_rel, rank = "species", assay.type = "relabundance", prevalence = 0, detection = 0.01)
 # 7 species with rel. abundance >= 0.01
 ```
 
 ##### Exclusive steiner ref
 
-```{r eval=FALSE}
+```{r}
 ### Subset steiner ref
 exclusive_steiner_ref_tax_rel <- species[exclusive_steiner_ref_tax, ]
 exclusive_steiner_ref_tax_rel <- exclusive_steiner_ref_tax_rel[ , exclusive_steiner_ref_tax_rel$group_new %in% c("Steiner_ref")]
 ```
 
-```{r eval=FALSE}
+```{r}
 # Convert to phyloseq
 farmps <- convertToPhyloseq(exclusive_steiner_ref_tax_rel, assay.type = "scale_norm")
 # Convert to taxmap
@@ -1826,7 +1826,7 @@ heat_tree(farmobj,
           initial_layout = "reingold-tilford")
 ```
 
-```{r eval=FALSE}
+```{r}
 exclusive_steiner_ref_tax_rel <- subsetByPrevalent(exclusive_steiner_ref_tax_rel, rank = "species", assay.type = "relabundance", prevalence = 0, detection = 0.01)
 # 0 species with rel. abundance >= 0.01
 ```
@@ -1835,14 +1835,14 @@ exclusive_steiner_ref_tax_rel <- subsetByPrevalent(exclusive_steiner_ref_tax_rel
 
 Data preparation
 
-```{r eval=FALSE}
+```{r}
 exclusive_farm_ARG <- base::readRDS("exclusive_farm_ARG.RData")
 exclusive_farm_ref_ARG <- base::readRDS("exclusive_farm_ref_ARG.RData")
 exclusive_steiner_ARG <- base::readRDS("exclusive_steiner_ARG.RData")
 exclusive_steiner_ref_ARG <- base::readRDS("exclusive_steiner_ref_ARG.RData")
 ```
 
-```{r eval=FALSE}
+```{r}
 combined_ARG <- c(exclusive_farm_ARG, exclusive_farm_ref_ARG, exclusive_steiner_ARG, exclusive_steiner_ref_ARG)
 exclusive_ARG <- ARG[combined_ARG, ]
 colData(exclusive_ARG)$group_new <- factor(colData(exclusive_ARG)$group_new, 
@@ -1877,7 +1877,7 @@ ggplot(data = df, aes(x = group_new, y = Abundance, fill = Class)) +
 
 # Abundance plots
 
-```{r eval=FALSE}
+```{r}
 species <- agglomerateByVariable(species, assay.type = "scale_norm", rank = "family", by = "cols", group = "group_new")
 species <- transformAssay(species, assay.type = "scale_norm", rank = "family", method = "relabundance")
 plotAbundance(species, assay.type = "relabundance", rank = "phylum", add.legend = FALSE)
@@ -1885,7 +1885,7 @@ plotAbundance(species, assay.type = "relabundance", rank = "phylum", add.legend 
 
 ## Taxa
 
-```{r eval=FALSE}
+```{r}
 ### Family
 tse_F <- species
 # Relevel
@@ -1952,7 +1952,7 @@ A <- ggplot(data = df) +
 
 ## ARGs
 
-```{r eval=FALSE}
+```{r}
 ### Family
 ARG_C <- ARG
 # Relevel
@@ -1989,13 +1989,13 @@ C <- ggplot(data = df, aes(x = group_new, y = Abundance, fill = Class)) +
         axis.ticks = element_line(color = "black"))
 ```
 
-```{r eval=FALSE}
+```{r}
 plot_grid(A, B, C, align = "hv")
 ```
 
 # Taxonomic tree
 
-```{r eval=FALSE}
+```{r}
 # Subset based on groups
 tax_steiner <- species[ , species$group_new %in% c("Steiner", "Steiner_ref")]
 # Identify taxa with 0 counts in all samples
@@ -2078,7 +2078,7 @@ heat_tree_matrix(farmobj,
 
 ## Taxa
 
-```{r eval=FALSE}
+```{r}
 # Add ARG load and diversity to colData
 colData(species)$Shannon <- richness_shannon$Shannon
 colData(species)$Simpson <- richness_InvSimpson$InvSimpson
@@ -2114,13 +2114,13 @@ Heat_tax <- Heatmap(res$cor,
     )
 ```
 
-```{r eval=FALSE}
+```{r}
 draw(Heat_tax, padding = unit(c(0, 0.5, 0.5, 2), "cm")) 
 ```
 
 ## ARGs
 
-```{r eval=FALSE}
+```{r}
 # Add ARG load and diversity to colData
 colData(ARG)$Shannon <- richness_shannon$Shannon
 colData(ARG)$Simpson <- richness_InvSimpson$InvSimpson
@@ -2158,6 +2158,6 @@ p <- Heatmap(res$cor,
     )
 ```
 
-```{r eval=FALSE}
+```{r}
 draw(p, padding = unit(c(0, 0.5, 0.5, 2), "cm")) 
 ```
