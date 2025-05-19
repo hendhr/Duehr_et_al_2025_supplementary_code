@@ -23,7 +23,7 @@ editor_options:
 
 ## Installation
 
-```{r}
+```{r eval=FALSE}
 ### Install mia from GitHub to have current fixes
 install.packages("remotes")
 library(remotes)
